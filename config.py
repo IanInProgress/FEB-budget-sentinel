@@ -45,6 +45,7 @@ DEFAULT_SUBTEAM_ALIASES: dict[str, str] = {
 class Settings:
     slack_bot_token: str
     slack_signing_secret: str
+    manager_channel_id: str
 
     google_sheet_id: str
     google_service_account_file: str | None
@@ -104,6 +105,7 @@ def load_settings(*, load_env: bool = True) -> Settings:
 
     slack_bot_token = _require_env("SLACK_BOT_TOKEN")
     slack_signing_secret = _require_env("SLACK_SIGNING_SECRET")
+    manager_channel_id = _require_env("MANAGER_CHANNEL_ID")
 
     google_sheet_id = _require_env("GOOGLE_SHEET_ID")
     google_service_account_file = os.getenv("GOOGLE_SERVICE_ACCOUNT_FILE", "").strip() or None
@@ -125,6 +127,7 @@ def load_settings(*, load_env: bool = True) -> Settings:
     return Settings(
         slack_bot_token=slack_bot_token,
         slack_signing_secret=slack_signing_secret,
+        manager_channel_id=manager_channel_id,
         google_sheet_id=google_sheet_id,
         google_service_account_file=google_service_account_file,
         google_service_account_json=google_service_account_json,

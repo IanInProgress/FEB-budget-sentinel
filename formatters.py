@@ -97,3 +97,104 @@ def format_block_kit(report: BudgetReport) -> dict:
 
     return {"blocks": blocks}
 
+
+def format_manager_notification_blocks(report: BudgetReport, user_id: str) -> list[dict]:
+    """
+    Format budget report as Slack Block Kit blocks for manager channel.
+    Compact and visually organized format with conditional layout for long item names.
+    """
+    blocks: list[dict] = []
+
+    # Header with status
+    blocks.append({
+        "type": "header",
+        "text": {
+            "type": "plain_text",
+            "text": f"{_status_prefix(report.status)} Purchase Request: {report.status.value}",
+        }
+    })
+
+    # Check item name length to determine layout
+    item_is_long = len(report.requested_item) > 50
+    
+    if item_is_long:
+        # Long item gets its own row for better readability
+        blocks.append({
+            "type": "section",
+            "fields": [
+                {"type": "mrkdwn", "text": f"*Requester*\n<@{user_id}>"},
+                {"type": "mrkdwn", "text": f"*Subteam*\n{report.subteam}"},
+            ]
+        })
+        blocks.append({
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": f"*Item*\n{report.requested_item}"}
+        })
+        blocks.append({
+            "type": "section",
+            "fields": [
+                {"type": "mrkdwn", "text": f"*Amount*\n{format_usd(report.requested_amount)}"},
+            ]
+        })
+    else:
+        # Short item uses compact 2-column layout
+        fields = [
+            {"type": "mrkdwn", "text": f"*Requester*\n<@{user_id}>"},
+            {"type": "mrkdwn", "text": f"*Subteam*\n{report.subteam}"},
+            {"type": "mrkdwn", "text": f"*Item*\n{report.requested_item}"},
+            {"type": "mrkdwn", "text": f"*Amount*\n{format_usd(report.requested_amount)}"},
+        ]
+        blocks.append({"type": "section", "fields": fields})
+
+    # Budget analysis section (only if we have budget data)
+    if report.matched_item or report.estimated_budget is not None:
+        budget_fields = []
+        
+        if report.matched_item:
+            budget_fields.append({
+                "type": "mrkdwn",
+                "text": f"*Matched Line*\n{report.matched_item}"
+            })
+        
+        if report.estimated_budget is not None and report.remaining_budget is not None:
+            budget_fields.append({
+                "type": "mrkdwn",
+                "text": f"*Budget Status*\n{format_usd(report.remaining_budget)} remaining of {format_usd(report.estimated_budget)}"
+            })
+        elif report.estimated_budget is not None:
+            budget_fields.append({
+                "type": "mrkdwn",
+                "text": f"*Estimated Budget*\n{format_usd(report.estimated_budget)}"
+            })
+        
+        if budget_fields:
+            blocks.append({"type": "section", "fields": budget_fields})
+
+    # Context/reason (compact single line with context styling)
+    blocks.append({
+        "type": "context",
+        "elements": [{"type": "mrkdwn", "text": f"_{report.reason}_"}]
+    })
+
+    # Suggestions/candidates (only if relevant)
+    if report.suggestions:
+        suggestions_text = ", ".join(report.suggestions[:5])
+        if len(report.suggestions) > 5:
+            suggestions_text += f" (+{len(report.suggestions) - 5} more)"
+        blocks.append({
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": f"*Did you mean:* {suggestions_text}"}
+        })
+    elif report.candidates:
+        candidates_text = ", ".join(report.candidates[:5])
+        if len(report.candidates) > 5:
+            candidates_text += f" (+{len(report.candidates) - 5} more)"
+        blocks.append({
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": f"*Similar items:* {candidates_text}"}
+        })
+
+    blocks.append({"type": "divider"})
+
+    return blocks
+

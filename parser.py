@@ -7,10 +7,10 @@ from budget_checker import Status
 from utils import coerce_money
 
 
-USAGE = 'Usage: /purchase <subteam> "<item name>" <amount>\nExample: /purchase electronics "CAN transceiver" 42.50'
+USAGE = 'Usage: /purchase <subteam>, <item name>, <amount>\nExample: /purchase electronics, CAN transceiver, 42.50'
 
 _CMD_RE = re.compile(
-    r'^\s*(?P<subteam>\S+)\s+"(?P<item>[^"]+)"\s+(?P<amount>\$?-?\d+(?:\.\d+)?)\s*$'
+    r'^\s*(?P<subteam>[^,]+?)\s*,\s*(?P<item>.+?)\s*,\s*(?P<amount>\$?-?\d+(?:\.\d+)?)\s*$'
 )
 
 
@@ -47,7 +47,7 @@ def parse_purchase_text(text: str) -> ParseResult:
         )
 
     subteam = m.group("subteam").strip()
-    item_name = m.group("item").strip()
+    item_name = m.group("item").strip().strip('"')  # Strip quotes if present
     amount_raw = m.group("amount").strip()
 
     try:

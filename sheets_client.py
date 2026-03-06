@@ -26,7 +26,7 @@ class CachedTab:
 
 class SheetsClient:
     """
-    Read-only Sheets client. Do NOT add write helpers in this MVP.
+    Sheets client for reading budget data and updating actual spending.
     """
 
     def __init__(
@@ -109,4 +109,69 @@ class SheetsClient:
         self._cache[tab_name] = CachedTab(fetched_at=now, lines=lines)
         logger.info("Fetched %s budget lines from tab %r", len(lines), tab_name)
         return lines
+
+    def update_actual_spending(
+        self,
+        *,
+        tab_name: str,
+        item_name: str,
+        amount_to_add: float,
+    ) -> bool:
+        """
+        Update the actual spending for a budget line item by adding the specified amount.
+        Returns True if successful, False if item not found.
+        Invalidates cache for this tab after update.
+        """
+        try:
+            ws = self._sh.worksheet(tab_name)
+        except WorksheetNotFound:
+            raise
+        except Exception as e:
+            raise SheetsClientError(f"Failed to open tab: {tab_name}") from e
+
+        try:
+            values = ws.get_all_values()
+        except Exception as e:
+            raise SheetsClientError(f"Failed to read tab values: {tab_name}") from e
+
+        # Find the matching row (case-insensitive, normalized match)
+        from utils import normalize_item_name
+        normalized_target = normalize_item_name(item_name)
+        
+        matched_row = None
+        for i, row in enumerate(values[1:], start=2):
+            row_item = (row[0] if len(row) > 0 else "").strip()
+            if not row_item:
+                continue
+            if normalize_item_name(row_item) == normalized_target:
+                matched_row = i
+                break
+        
+        if matched_row is None:
+            logger.warning("Item %r not found in tab %r for spending update", item_name, tab_name)
+            return False
+
+        # Column C (index 2) is actual spending
+        try:
+            current_actual_raw = values[matched_row - 1][2] if len(values[matched_row - 1]) > 2 else ""
+            current_actual = coerce_money(current_actual_raw, default=0.0)
+        except Exception:
+            current_actual = 0.0
+        
+        new_actual = clamp_nonnegative(current_actual + amount_to_add)
+        
+        # Update cell C{matched_row}
+        try:
+            ws.update_cell(matched_row, 3, new_actual)
+            logger.info(
+                "Updated actual spending for %r in tab %r: %s -> %s (+%s)",
+                item_name, tab_name, current_actual, new_actual, amount_to_add
+            )
+        except Exception as e:
+            raise SheetsClientError(f"Failed to update cell in tab {tab_name}") from e
+        
+        # Invalidate cache for this tab
+        self._cache.pop(tab_name, None)
+        
+        return True
 
