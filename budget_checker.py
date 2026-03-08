@@ -4,34 +4,24 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Iterable
 
-from utils import clamp_nonnegative, normalize_item_name
-
 
 class Status(str, Enum):
     WITHIN_BUDGET = "WITHIN_BUDGET"
     OVER_BUDGET = "OVER_BUDGET"
     ITEM_NOT_FOUND = "ITEM_NOT_FOUND"
-    AMBIGUOUS_MATCH = "AMBIGUOUS_MATCH"
+    UNACCOUNTED_ITEM = "UNACCOUNTED_ITEM"
     DATA_ERROR = "DATA_ERROR"
-    SUBTEAM_TAB_NOT_FOUND = "SUBTEAM_TAB_NOT_FOUND"
     INVALID_COMMAND = "INVALID_COMMAND"
 
 
 @dataclass(frozen=True)
 class BudgetLine:
+    reference_id: str
     item_name: str
     estimated_budget: float | None
     actual_spending: float | None
+    available_budget: float | None = None
     row_number: int | None = None  # 1-based sheet row, if known
-
-
-@dataclass(frozen=True)
-class MatchResult:
-    status: Status
-    matched: BudgetLine | None
-    candidates: list[BudgetLine]
-    reason: str
-    suggestions: list[str]
 
 
 @dataclass(frozen=True)
@@ -40,205 +30,183 @@ class BudgetReport:
     reason: str
 
     subteam: str
-    requested_item: str
+    reference_id: str
+    item_name: str
     requested_amount: float
 
-    matched_item: str | None
     estimated_budget: float | None
     actual_spending: float | None
     remaining_budget: float | None
-
-    candidates: list[str]
-    suggestions: list[str]
-
-
-def _try_fuzzy_suggestions(
-    *,
-    requested_item: str,
-    lines: list[BudgetLine],
-    threshold: int,
-    limit: int = 3,
-) -> list[str]:
-    try:
-        from rapidfuzz import process, fuzz  # type: ignore
-    except Exception:
-        return []
-
-    choices = [ln.item_name for ln in lines if ln.item_name.strip()]
-    if not choices:
-        return []
-
-    # WRatio works well across small punctuation/word-order differences.
-    results = process.extract(
-        requested_item,
-        choices,
-        scorer=fuzz.WRatio,
-        limit=limit,
-    )
-    suggestions: list[str] = []
-    for name, score, _idx in results:
-        if score >= threshold and name not in suggestions:
-            suggestions.append(name)
-    return suggestions
+    available_budget: float | None = None
 
 
 def find_budget_match(
     *,
-    requested_item: str,
+    reference_id: str,
     lines: Iterable[BudgetLine],
-    fuzzy_suggestion_threshold: int = 84,
-) -> MatchResult:
-    all_lines = [ln for ln in lines if ln.item_name and ln.item_name.strip()]
-    if not all_lines:
-        return MatchResult(
-            status=Status.ITEM_NOT_FOUND,
-            matched=None,
-            candidates=[],
-            reason="No budget lines found in this tab.",
-            suggestions=[],
-        )
-
-    req_raw = requested_item.strip()
-    req_norm = normalize_item_name(req_raw)
-
-    exact_matches = [ln for ln in all_lines if ln.item_name.strip().lower() == req_raw.lower()]
-    if len(exact_matches) == 1:
-        return MatchResult(
-            status=Status.WITHIN_BUDGET,
-            matched=exact_matches[0],
-            candidates=[exact_matches[0]],
-            reason="Exact item match (case-insensitive).",
-            suggestions=[],
-        )
-    if len(exact_matches) > 1:
-        return MatchResult(
-            status=Status.AMBIGUOUS_MATCH,
-            matched=None,
-            candidates=exact_matches,
-            reason="Multiple exact matches found for this item name.",
-            suggestions=[],
-        )
-
-    norm_matches = [ln for ln in all_lines if normalize_item_name(ln.item_name) == req_norm]
-    if len(norm_matches) == 1:
-        return MatchResult(
-            status=Status.WITHIN_BUDGET,
-            matched=norm_matches[0],
-            candidates=[norm_matches[0]],
-            reason="Normalized item match (punctuation/spacing-insensitive).",
-            suggestions=[],
-        )
-    if len(norm_matches) > 1:
-        return MatchResult(
-            status=Status.AMBIGUOUS_MATCH,
-            matched=None,
-            candidates=norm_matches,
-            reason="Multiple normalized matches found for this item name.",
-            suggestions=[],
-        )
-
-    suggestions = _try_fuzzy_suggestions(
-        requested_item=req_raw,
-        lines=all_lines,
-        threshold=fuzzy_suggestion_threshold,
-    )
-    return MatchResult(
-        status=Status.ITEM_NOT_FOUND,
-        matched=None,
-        candidates=[],
-        reason="No matching item found in the selected subteam budget tab.",
-        suggestions=suggestions,
-    )
+) -> BudgetReport | None:
+    """
+    Find a budget line by exact reference_id match.
+    Returns BudgetReport if found, None if not found.
+    """
+    all_lines = list(lines)
+    
+    for line in all_lines:
+        if line.reference_id.upper() == reference_id.upper():
+            est = line.estimated_budget
+            act = line.actual_spending
+            
+            if est is None or act is None:
+                return BudgetReport(
+                    status=Status.DATA_ERROR,
+                    reason="Budget data is missing or non-numeric for this item.",
+                    subteam=line.item_name,  # Using item_name as display
+                    reference_id=reference_id,
+                    item_name=line.item_name,
+                    requested_amount=0,
+                    estimated_budget=est,
+                    actual_spending=act,
+                    remaining_budget=None,
+                    available_budget=line.available_budget,
+                )
+            
+            remaining = est - act
+            
+            return BudgetReport(
+                status=Status.WITHIN_BUDGET,
+                reason="Item found.",
+                subteam=line.item_name,
+                reference_id=reference_id,
+                item_name=line.item_name,
+                requested_amount=0,  # Will be filled in by caller
+                estimated_budget=est,
+                actual_spending=act,
+                remaining_budget=remaining,
+                available_budget=line.available_budget,
+            )
+    
+    # Not found
+    return None
 
 
 def build_budget_report(
     *,
     subteam: str,
-    requested_item: str,
+    reference_id: str,
+    item_name: str,
     requested_amount: float,
     lines: Iterable[BudgetLine],
-    fuzzy_suggestion_threshold: int = 84,
+    is_unaccounted: bool = False,
 ) -> BudgetReport:
-    match = find_budget_match(
-        requested_item=requested_item,
-        lines=lines,
-        fuzzy_suggestion_threshold=fuzzy_suggestion_threshold,
-    )
+    """
+    Build a budget report by looking up an item by reference_id.
+    If is_unaccounted=True, skip lookup and return UNACCOUNTED_ITEM status.
+    """
+    all_lines = list(lines)
 
-    if match.status in (Status.ITEM_NOT_FOUND, Status.AMBIGUOUS_MATCH):
+    def _subteam_available_budget() -> float | None:
+        for line in all_lines:
+            if line.available_budget is not None:
+                return float(line.available_budget)
+        return None
+
+    # Handle unaccounted items (e.g., ADMIN-000)
+    if is_unaccounted:
+        subteam_available = _subteam_available_budget()
+        if subteam_available is None:
+            reason = "Unaccounted item in planned budget; subteam available budget is unavailable."
+        elif requested_amount <= subteam_available + 1e-9:
+            reason = "Unaccounted item in planned budget, but within subteam available budget."
+        else:
+            reason = "Unaccounted item in planned budget and exceeds subteam available budget."
+
         return BudgetReport(
-            status=match.status,
-            reason=match.reason,
+            status=Status.UNACCOUNTED_ITEM,
+            reason=reason,
             subteam=subteam,
-            requested_item=requested_item,
+            reference_id=reference_id,
+            item_name=item_name,
             requested_amount=requested_amount,
-            matched_item=None,
             estimated_budget=None,
             actual_spending=None,
             remaining_budget=None,
-            candidates=[c.item_name for c in match.candidates],
-            suggestions=match.suggestions,
+            available_budget=subteam_available,
         )
-
-    if match.matched is None:
+    
+    match = find_budget_match(reference_id=reference_id, lines=all_lines)
+    
+    if match is None:
         return BudgetReport(
-            status=Status.DATA_ERROR,
-            reason="Unexpected matching state (no matched line).",
+            status=Status.ITEM_NOT_FOUND,
+            reason=f"Item with reference ID {reference_id} not found.",
             subteam=subteam,
-            requested_item=requested_item,
+            reference_id=reference_id,
+            item_name=item_name,
             requested_amount=requested_amount,
-            matched_item=None,
             estimated_budget=None,
             actual_spending=None,
             remaining_budget=None,
-            candidates=[],
-            suggestions=[],
+            available_budget=None,
         )
-
-    est = match.matched.estimated_budget
-    act = match.matched.actual_spending
+    
+    # Update with requested amount for budget comparison
+    est = match.estimated_budget
+    act = match.actual_spending
+    
     if est is None or act is None:
         return BudgetReport(
             status=Status.DATA_ERROR,
-            reason="Budget data is missing or non-numeric for the matched line item.",
+            reason="Budget data is missing or non-numeric for this item.",
             subteam=subteam,
-            requested_item=requested_item,
+            reference_id=reference_id,
+            item_name=match.item_name,
             requested_amount=requested_amount,
-            matched_item=match.matched.item_name,
             estimated_budget=est,
             actual_spending=act,
             remaining_budget=None,
-            candidates=[],
-            suggestions=[],
+            available_budget=None,
         )
-
-    remaining = clamp_nonnegative(est - act)
+    
+    remaining = est - act
+    
     if requested_amount <= remaining + 1e-9:
+        if match.available_budget is None:
+            within_reason = "Within item budget; subteam available budget is unavailable."
+        elif requested_amount <= match.available_budget + 1e-9:
+            within_reason = "Within both item budget and subteam available budget."
+        else:
+            within_reason = "Within item budget, but exceeds subteam available budget."
+
         return BudgetReport(
             status=Status.WITHIN_BUDGET,
-            reason="Requested amount is within remaining budget for this item.",
+            reason=within_reason,
             subteam=subteam,
-            requested_item=requested_item,
+            reference_id=reference_id,
+            item_name=match.item_name,
             requested_amount=requested_amount,
-            matched_item=match.matched.item_name,
             estimated_budget=est,
             actual_spending=act,
             remaining_budget=remaining,
-            candidates=[],
-            suggestions=[],
+            available_budget=match.available_budget,
         )
+    
+    if match.available_budget is None:
+        over_reason = "Exceeds item budget; subteam available budget is unavailable."
+    elif requested_amount <= match.available_budget + 1e-9:
+        over_reason = "Exceeds item budget, but within subteam available budget."
+    else:
+        over_reason = "Exceeds both item budget and subteam available budget."
 
     return BudgetReport(
         status=Status.OVER_BUDGET,
-        reason="Requested amount exceeds remaining budget for this item.",
+        reason=over_reason,
         subteam=subteam,
-        requested_item=requested_item,
+        reference_id=reference_id,
+        item_name=match.item_name,
         requested_amount=requested_amount,
-        matched_item=match.matched.item_name,
         estimated_budget=est,
         actual_spending=act,
         remaining_budget=remaining,
-        candidates=[],
-        suggestions=[],
+        available_budget=match.available_budget,
     )
 
