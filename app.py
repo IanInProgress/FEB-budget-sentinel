@@ -1004,12 +1004,12 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
     return server, bolt_app
 
 
-if __name__ == "__main__":
-    try:
-        settings = load_settings()
-    except ConfigError as e:
-        raise SystemExit(f"Config error: {e}") from e
+# Module-level server initialization for gunicorn/production WSGI servers
+settings = load_settings()
+server, bolt_app = create_server(settings)
 
-    server, _bolt_app = create_server(settings)
+
+if __name__ == "__main__":
+    # When running locally with `python app.py`, use the module-level server
     port = int(os.getenv("PORT", str(settings.port)))
     server.run(host="0.0.0.0", port=port)

@@ -51,7 +51,15 @@ def load_settings(*, load_env: bool = True) -> Settings:
 
     slack_bot_token = _require_env("SLACK_BOT_TOKEN")
     slack_signing_secret = _require_env("SLACK_SIGNING_SECRET")
-    manager_channel_id = _require_env("MANAGER_CHANNEL_ID")
+    manager_channel_id = (
+        os.getenv("MANAGER_CHANNEL_ID", "").strip()
+        or os.getenv("SLACK_MANAGER_CHANNEL_ID", "").strip()
+    )
+    if not manager_channel_id:
+        raise ConfigError(
+            "Missing required environment variable: MANAGER_CHANNEL_ID "
+            "(or SLACK_MANAGER_CHANNEL_ID for backward compatibility)"
+        )
 
     google_sheet_id = _require_env("GOOGLE_SHEET_ID")
     google_service_account_file = os.getenv("GOOGLE_SERVICE_ACCOUNT_FILE", "").strip() or None

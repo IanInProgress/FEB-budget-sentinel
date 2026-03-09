@@ -69,7 +69,7 @@ A Slack-integrated budget management system for Formula Electric Berkeley. Membe
    ```env
    SLACK_BOT_TOKEN=xoxb-your-bot-token
    SLACK_SIGNING_SECRET=your-signing-secret
-   SLACK_MANAGER_CHANNEL_ID=C123ABC456
+   MANAGER_CHANNEL_ID=C123ABC456
    GOOGLE_SHEET_ID=your-spreadsheet-id
    GOOGLE_SERVICE_ACCOUNT_FILE=google-service-account.json
    PURCHASE_COMMAND_KEYWORD=command_purchase:
