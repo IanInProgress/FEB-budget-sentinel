@@ -22,13 +22,6 @@ REFERENCE_ID_PREFIX_TO_TAB = {
     "MANU": "Manufacturing",
 }
 
-USAGE = '''Usage: Send a message with image attachment
-  command_purchase: <reference_id>, <amount>, <reason>
-  Example: command_purchase: ADMIN-001, 50.00, Need for supplies
-  For unaccounted items: ADMIN-000 Item Name, <amount>, <reason>
-  Example: command_purchase: ADMIN-000 Toilet Paper, 25.00, Need for office
-  [Attach receipt image to the same message]'''
-
 # Match: [REF-ID Item Name], amount, reason  OR  [REF-ID], amount, reason
 _CMD_RE = re.compile(
     r'^\s*(?P<ref_id>[A-Za-z0-9_-]+)(?:\s+(?P<item_name>[^,]+))?\s*,\s*(?P<amount>\$?-?\d+(?:\.\d+)?)\s*,\s*(?P<reason>.+?)\s*$'
@@ -46,14 +39,50 @@ class ParseResult:
     reason: str | None
     is_unaccounted: bool = False
     provided_item_name: str | None = None
+    line_number: int | None = None
 
 
-def parse_purchase_text(text: str) -> ParseResult:
+@dataclass(frozen=True)
+class BulkOrderParseResult:
+    ok: bool
+    status: Status
+    error_message: str | None
+    items: list[ParseResult]
+
+
+def _single_item_usage(command_keyword: str) -> str:
+    return (
+        "Usage: Open the request form and enter:\n"
+        f"  {command_keyword} <reference_id>, <amount>, <reason>\n"
+        f"  Example: {command_keyword} ADMIN-001, 50.00, Need for supplies\n"
+        "  For unaccounted items: ADMIN-000 Item Name, <amount>, <reason>\n"
+        f"  Example: {command_keyword} ADMIN-000 Toilet Paper, 25.00, Need for office\n"
+        "  [After Review, upload receipt image in channel and click Confirm]"
+    )
+
+
+def _bulk_order_usage(command_keyword: str) -> str:
+    return (
+        "Usage: Open the request form and enter:\n"
+        f"  {command_keyword}\n"
+        "  <reference_id>, <amount>, <reason>\n"
+        "  <reference_id>, <amount>, <reason>\n"
+        "  ...\n"
+        f"  Example:\n  {command_keyword}\n"
+        "  EECS-001, 20.00, Connectors\n"
+        "  EECS-010, 15.50, Ferrules\n"
+        "  EECS-000 New Bin, 12.00, Storage for parts\n"
+        "  [After Review, upload receipt image in channel and click Confirm]"
+    )
+
+
+def parse_purchase_text(text: str, *, command_keyword: str = "command_purchase:") -> ParseResult:
+    usage = _single_item_usage(command_keyword)
     if not text or not text.strip():
         return ParseResult(
             ok=False,
             status=Status.INVALID_COMMAND,
-            error_message=f"Missing arguments.\n{USAGE}",
+            error_message=f"Missing arguments.\n{usage}",
             reference_id=None,
             subteam_tab=None,
             requested_amount=None,
@@ -65,7 +94,7 @@ def parse_purchase_text(text: str) -> ParseResult:
         return ParseResult(
             ok=False,
             status=Status.INVALID_COMMAND,
-            error_message=f"Could not parse command.\n{USAGE}",
+            error_message=f"Could not parse command.\n{usage}",
             reference_id=None,
             subteam_tab=None,
             requested_amount=None,
@@ -117,7 +146,7 @@ def parse_purchase_text(text: str) -> ParseResult:
         return ParseResult(
             ok=False,
             status=Status.INVALID_COMMAND,
-            error_message=f"Invalid amount: {amount_raw!r}.\n{USAGE}",
+            error_message=f"Invalid amount: {amount_raw!r}.\n{usage}",
             reference_id=None,
             subteam_tab=None,
             requested_amount=None,
@@ -139,7 +168,7 @@ def parse_purchase_text(text: str) -> ParseResult:
         return ParseResult(
             ok=False,
             status=Status.INVALID_COMMAND,
-            error_message=f"Missing reason.\n{USAGE}",
+            error_message=f"Missing reason.\n{usage}",
             reference_id=None,
             subteam_tab=None,
             requested_amount=None,
@@ -168,5 +197,59 @@ def parse_purchase_text(text: str) -> ParseResult:
         reason=reason,
         is_unaccounted=is_unaccounted,
         provided_item_name=provided_item_name,
+    )
+
+
+def parse_bulk_purchase_text(text: str, *, command_keyword: str = "bigorder:") -> BulkOrderParseResult:
+    usage = _bulk_order_usage(command_keyword)
+    if not text or not text.strip():
+        return BulkOrderParseResult(
+            ok=False,
+            status=Status.INVALID_COMMAND,
+            error_message=f"Missing bulk order items.\n{usage}",
+            items=[],
+        )
+
+    raw_lines = [line.strip() for line in text.splitlines()]
+    item_lines = [line for line in raw_lines if line]
+    if not item_lines:
+        return BulkOrderParseResult(
+            ok=False,
+            status=Status.INVALID_COMMAND,
+            error_message=f"Missing bulk order items.\n{usage}",
+            items=[],
+        )
+
+    parsed_items: list[ParseResult] = []
+    for idx, line in enumerate(item_lines, start=1):
+        parsed = parse_purchase_text(line, command_keyword=command_keyword)
+        if not parsed.ok:
+            line_error = parsed.error_message or "Invalid bulk order line."
+            return BulkOrderParseResult(
+                ok=False,
+                status=parsed.status,
+                error_message=f"Line {idx}: {line_error}",
+                items=[],
+            )
+        parsed_items.append(
+            ParseResult(
+                ok=parsed.ok,
+                status=parsed.status,
+                error_message=parsed.error_message,
+                reference_id=parsed.reference_id,
+                subteam_tab=parsed.subteam_tab,
+                requested_amount=parsed.requested_amount,
+                reason=parsed.reason,
+                is_unaccounted=parsed.is_unaccounted,
+                provided_item_name=parsed.provided_item_name,
+                line_number=idx,
+            )
+        )
+
+    return BulkOrderParseResult(
+        ok=True,
+        status=Status.WITHIN_BUDGET,
+        error_message=None,
+        items=parsed_items,
     )
 

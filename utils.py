@@ -1,24 +1,7 @@
 from __future__ import annotations
 
-import re
 from decimal import Decimal, InvalidOperation
 from typing import Any
-
-_PUNCT_RE = re.compile(r"[^\w\s]+", re.UNICODE)
-_WS_RE = re.compile(r"\s+")
-
-
-def normalize_item_name(value: str) -> str:
-    """
-    Normalization rules:
-    - lowercase
-    - remove common punctuation
-    - collapse whitespace
-    """
-    s = value.strip().lower()
-    s = _PUNCT_RE.sub(" ", s)
-    s = _WS_RE.sub(" ", s).strip()
-    return s
 
 
 def format_usd(amount: float) -> str:

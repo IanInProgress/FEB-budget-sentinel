@@ -4,8 +4,8 @@ import json
 import logging
 import os
 import re
+import threading
 import time
-import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Any
@@ -16,16 +16,16 @@ from slack_bolt import App
 from slack_bolt.adapter.flask import SlackRequestHandler
 
 from budget_checker import build_budget_report
-from config import ConfigError, Settings, load_settings
-from formatters import _recommendation_header, format_manager_notification_blocks
-from parser import REFERENCE_ID_PREFIX_TO_TAB, parse_purchase_text
+from config import Settings, load_settings
+from formatters import (
+    _recommendation_header,
+    format_reference_lookup_dm,
+    format_manager_bundle_notification_blocks,
+    format_manager_notification_blocks,
+)
+from parser import REFERENCE_ID_PREFIX_TO_TAB, parse_bulk_purchase_text, parse_purchase_text
 from sheets_client import SheetsClient, SheetsClientError
 from utils import coerce_money, format_usd
-
-
-def _request_id_fallback() -> str:
-    """Fallback UUID when Sheets counter fails."""
-    return f"REQ-{uuid.uuid4().hex[:8].upper()}"
 
 
 EXECUTOR = ThreadPoolExecutor(max_workers=4)
@@ -33,13 +33,23 @@ PENDING_APPROVALS: dict[str, dict[str, Any]] = {}  # message_ts -> request metad
 PENDING_REJECTION_REASONS: dict[str, dict[str, Any]] = {}  # manager message_ts -> rejection metadata
 PENDING_CONFIRMATIONS: set[tuple[str, str, str]] = set()  # (user_id, channel_id, original_message_ts) -> in-flight
 REJECTION_REASON_TIMEOUT_SECONDS = 600
+REQUEST_ID_PATTERN = re.compile(r"\bREQ-[A-Z0-9]{6,}\b", re.IGNORECASE)
+MANAGER_APPROVE_TOKENS = ("✅", ":white_check_mark:", ":heavy_check_mark:")
+MANAGER_REJECT_TOKENS = ("❌", ":x:", ":no_entry:")
+MANAGER_DECISION_SCAN_INTERVAL_SECONDS = 30
+MANAGER_DECISION_SCAN_HISTORY_LIMIT = 100
+RECEIPT_AUTO_LOOKBACK_SECONDS = 900
 
 
 def _configure_logging(level: str) -> None:
+    resolved_level = getattr(logging, level.upper(), logging.INFO)
     logging.basicConfig(
-        level=getattr(logging, level.upper(), logging.INFO),
+        level=resolved_level,
         format="%(asctime)s %(levelname)s %(name)s - %(message)s",
+        force=True,
     )
+    # Keep Flask/Werkzeug request logging consistent with configured LOG_LEVEL.
+    logging.getLogger("werkzeug").setLevel(resolved_level)
 
 
 def _prune_pending_rejection_reasons() -> None:
@@ -51,6 +61,148 @@ def _prune_pending_rejection_reasons() -> None:
     ]
     for message_ts in expired:
         PENDING_REJECTION_REASONS.pop(message_ts, None)
+
+
+def _extract_request_id_from_text(text: str | None) -> str | None:
+    if not text:
+        return None
+    m = REQUEST_ID_PATTERN.search(text)
+    if not m:
+        return None
+    return m.group(0).upper()
+
+
+def _extract_request_id_from_blocks(blocks: Any) -> str | None:
+    if not isinstance(blocks, list):
+        return None
+
+    for block in blocks:
+        if not isinstance(block, dict):
+            continue
+
+        text_obj = block.get("text")
+        if isinstance(text_obj, dict):
+            request_id = _extract_request_id_from_text(text_obj.get("text"))
+            if request_id:
+                return request_id
+
+        fields = block.get("fields")
+        if isinstance(fields, list):
+            for field in fields:
+                if not isinstance(field, dict):
+                    continue
+                request_id = _extract_request_id_from_text(field.get("text"))
+                if request_id:
+                    return request_id
+
+        elements = block.get("elements")
+        if isinstance(elements, list):
+            for element in elements:
+                if not isinstance(element, dict):
+                    continue
+                request_id = _extract_request_id_from_text(element.get("text"))
+                if request_id:
+                    return request_id
+
+    return None
+
+
+def _resolve_request_id_for_manager_thread(client, channel_id: str, thread_ts: str) -> str | None:
+    """
+    Recover request_id from the manager root message for this thread.
+    """
+    try:
+        replies = client.conversations_replies(
+            channel=channel_id,
+            ts=thread_ts,
+            oldest=thread_ts,
+            inclusive=True,
+            limit=1,
+        )
+        messages = replies.get("messages") or []
+        if not messages:
+            return None
+
+        root = messages[0]
+        request_id = _extract_request_id_from_text(root.get("text"))
+        if request_id:
+            return request_id
+
+        request_id = _extract_request_id_from_blocks(root.get("blocks"))
+        if request_id:
+            return request_id
+    except Exception:
+        return None
+
+    return None
+
+
+def _recover_manager_decision_from_thread(
+    client,
+    channel_id: str,
+    thread_ts: str,
+) -> tuple[bool, str, set[int] | None] | None:
+    """
+    Recover the latest explicit manager decision (approve/reject) from thread history.
+    Returns (is_approved, manager_user_id, approved_line_numbers) or None
+    if no decision is found.
+    """
+    try:
+        replies = client.conversations_replies(
+            channel=channel_id,
+            ts=thread_ts,
+            limit=200,
+        )
+    except Exception:
+        return None
+
+    messages = replies.get("messages") or []
+    # Walk newest -> oldest and pick the latest explicit manager decision token.
+    for msg in reversed(messages):
+        if msg.get("bot_id"):
+            continue
+        user_id = (msg.get("user") or "").strip()
+        if not user_id:
+            continue
+        text = (msg.get("text") or "").strip()
+        is_approved, is_rejected, approved_line_numbers = _parse_manager_decision_text(text)
+        if is_approved:
+            return True, user_id, approved_line_numbers
+        if is_rejected:
+            return False, user_id, None
+
+    return None
+
+
+def _parse_manager_decision_text(text: str | None) -> tuple[bool, bool, set[int] | None]:
+    """
+    Parse manager thread decision text.
+
+    Returns (is_approved, is_rejected, approved_line_numbers).
+    approved_line_numbers is only populated for approval messages that include numbers,
+    e.g. "✅ 1 2 3".
+    """
+    candidate = (text or "").strip()
+    if not candidate:
+        return False, False, None
+
+    has_approve = any(token in candidate for token in MANAGER_APPROVE_TOKENS)
+    has_reject = any(token in candidate for token in MANAGER_REJECT_TOKENS)
+
+    # Ignore ambiguous messages containing both approve and reject tokens.
+    if has_approve and has_reject:
+        return False, False, None
+
+    if has_reject:
+        return False, True, None
+
+    if has_approve:
+        # Prevent request IDs like REQ-000123 from being interpreted as item numbers.
+        text_without_req_ids = REQUEST_ID_PATTERN.sub(" ", candidate)
+        line_numbers = {int(m.group(0)) for m in re.finditer(r"\b\d+\b", text_without_req_ids)}
+        return True, False, (line_numbers or None)
+
+    return False, False, None
 
 
 def _build_deletable_message_blocks(
@@ -103,6 +255,19 @@ def _post_thread_message_with_delete_button(client, channel_id: str, thread_ts: 
     )
 
 
+def _bundle_total_amount(items: list[dict[str, Any]]) -> float:
+    return float(sum(float(item["requested_amount"]) for item in items))
+
+
+def _format_item_lines_for_message(items: list[dict[str, Any]]) -> str:
+    parts = []
+    for item in items:
+        parts.append(
+            f"Item {item['line_number']}: {item['reference_id']} | {item['item_name']} | {format_usd(float(item['requested_amount']))}"
+        )
+    return "\n".join(parts)
+
+
 def create_server(settings: Settings) -> tuple[Flask, App]:
     _configure_logging(settings.log_level)
     logger = logging.getLogger("purchase_bot")
@@ -118,6 +283,975 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
         service_account_file=settings.google_service_account_file,
         service_account_json=settings.google_service_account_json,
     )
+    sheets.ensure_purchase_log_schema_on_startup()
+    sheets.ensure_reimbursements_log_schema_on_startup()
+
+    decision_inflight_threads: set[str] = set()
+    decision_inflight_lock = threading.Lock()
+
+    def _submit_manager_decision_processing(
+        *,
+        approval_data: dict[str, Any],
+        is_approved: bool,
+        approved_line_numbers: set[int] | None,
+        manager_id: str | None,
+        thread_ts: str,
+    ) -> None:
+        if not manager_id:
+            return
+
+        with decision_inflight_lock:
+            if thread_ts in decision_inflight_threads:
+                return
+            decision_inflight_threads.add(thread_ts)
+
+        def run_approval() -> None:
+            try:
+                requester_id = approval_data["user_id"]
+                request_id = approval_data["request_id"]
+                original_channel_id = approval_data.get("original_channel_id")
+                original_message_ts = approval_data.get("original_message_ts")
+                items = approval_data.get("items") or [
+                    {
+                        "line_number": 1,
+                        "subteam_tab": approval_data["subteam_tab"],
+                        "reference_id": approval_data["reference_id"],
+                        "item_name": approval_data["item_name"],
+                        "requested_amount": approval_data["requested_amount"],
+                        "is_unaccounted": approval_data.get("is_unaccounted", False),
+                        "reason": approval_data.get("purchase_reason", ""),
+                    }
+                ]
+                reviewed_at_utc = datetime.now(timezone.utc).isoformat()
+                total_amount = _bundle_total_amount(items)
+                approved_total = 0.0
+                rejected_total = 0.0
+
+                bank_before_for_copy = None
+                running_bank_available_for_log = None
+                try:
+                    bank_before_for_copy = sheets.get_bank_available()
+                    # Bank cash balance changes on reimbursement, not on approval.
+                    running_bank_available_for_log = bank_before_for_copy
+                except Exception as e:
+                    logger.warning("Failed to read bank_available: %s", e)
+
+                approved_item_summaries: list[str] = []
+                rejected_item_summaries: list[str] = []
+                for item in items:
+                    line_number = int(item["line_number"])
+                    subteam_tab = str(item["subteam_tab"])
+                    reference_id = str(item["reference_id"])
+                    item_name = str(item["item_name"])
+                    amount = float(item["requested_amount"])
+                    is_unaccounted = bool(item.get("is_unaccounted", False))
+                    should_approve = is_approved and (
+                        approved_line_numbers is None or line_number in approved_line_numbers
+                    )
+                    available_budget_before: float | None = None
+
+                    try:
+                        latest_lines = sheets.get_budget_lines(tab_name=subteam_tab, force_refresh=True)
+                        if is_unaccounted:
+                            matching_line = next(
+                                (line for line in latest_lines if line.available_budget is not None),
+                                None,
+                            )
+                        else:
+                            matching_line = next(
+                                (
+                                    line
+                                    for line in latest_lines
+                                    if line.reference_id.upper() == reference_id.upper()
+                                ),
+                                None,
+                            )
+                        if matching_line and matching_line.available_budget is not None:
+                            available_budget_before = float(matching_line.available_budget)
+                    except Exception:
+                        logger.warning(
+                            "Could not read available budget before approval for %s in %s",
+                            reference_id,
+                            subteam_tab,
+                        )
+
+                    if should_approve:
+                        final_reference_id = reference_id
+                        if is_unaccounted:
+                            try:
+                                final_reference_id = sheets.append_budget_line(
+                                    tab_name=subteam_tab,
+                                    item_name=item_name,
+                                    initial_spending=amount,
+                                )
+                                sheets.update_purchase_log_reference_id(
+                                    request_id=request_id,
+                                    bundle_line_number=line_number,
+                                    reference_id=final_reference_id,
+                                )
+                                item["reference_id"] = final_reference_id
+                                logger.info("Appended unaccounted item %r as %s", item_name, final_reference_id)
+                            except Exception:
+                                logger.exception("Failed to append unaccounted item to sheet")
+                        else:
+                            try:
+                                success = sheets.update_pending_spending_by_id(
+                                    tab_name=subteam_tab,
+                                    reference_id=reference_id,
+                                    amount_to_add=amount,
+                                )
+                                if not success:
+                                    logger.warning("Could not find reference_id %r in sheet for update", reference_id)
+                            except Exception:
+                                logger.exception("Failed to update sheet for approved purchase")
+
+                        subteam_available_after = (
+                            available_budget_before - amount if available_budget_before is not None else None
+                        )
+                        bank_available_after_for_line = None
+                        if running_bank_available_for_log is not None:
+                            running_bank_available_for_log -= amount
+                            bank_available_after_for_line = running_bank_available_for_log
+
+                        sheets.update_purchase_log_status(
+                            request_id=request_id,
+                            bundle_line_number=line_number,
+                            status="approved",
+                            reviewed_at_utc=reviewed_at_utc,
+                            manager_id=manager_id,
+                            subteam_available_after=subteam_available_after,
+                            bank_available_after=bank_available_after_for_line,
+                        )
+                        approved_total += amount
+                        approved_item_summaries.append(
+                            f"Item {line_number}: {final_reference_id} | {item_name} | {format_usd(amount)}"
+                        )
+                    else:
+                        subteam_after = available_budget_before
+                        sheets.update_purchase_log_status(
+                            request_id=request_id,
+                            bundle_line_number=line_number,
+                            status="rejected",
+                            reviewed_at_utc=reviewed_at_utc,
+                            manager_id=manager_id,
+                            subteam_available_after=subteam_after,
+                            bank_available_after=bank_before_for_copy,
+                        )
+                        rejected_total += amount
+                        rejected_item_summaries.append(
+                            f"Item {line_number}: {reference_id} | {item_name} | {format_usd(amount)}"
+                        )
+
+                if approved_item_summaries and rejected_item_summaries:
+                    bolt_app.client.chat_postMessage(
+                        channel=str(requester_id),
+                        text=(
+                            f"⚠️ Your purchase request was *partially approved* by <@{manager_id}>.\n\n"
+                            f"*Request ID:* {request_id}\n"
+                            f"*Approved Amount:* {format_usd(approved_total)}\n"
+                            f"*Rejected Amount:* {format_usd(rejected_total)}\n"
+                            f"*Approved Items:*\n{chr(10).join(approved_item_summaries)}\n\n"
+                            f"*Rejected Items:*\n{chr(10).join(rejected_item_summaries)}\n\n"
+                            "Items not listed in the manager's approval message were rejected."
+                        ),
+                    )
+                    bolt_app.client.chat_postMessage(
+                        channel=settings.manager_channel_id,
+                        thread_ts=thread_ts,
+                        text=(
+                            f"✅ Partially approved and logged for <@{requester_id}>.\n"
+                            f"*Approved:* {len(approved_item_summaries)} item(s), {format_usd(approved_total)}\n"
+                            f"*Rejected:* {len(rejected_item_summaries)} item(s), {format_usd(rejected_total)}"
+                        ),
+                    )
+                elif approved_item_summaries:
+                    bolt_app.client.chat_postMessage(
+                        channel=str(requester_id),
+                        text=(
+                            f"✅ Your purchase request was *approved* by <@{manager_id}>!\n\n"
+                            f"*Request ID:* {request_id}\n"
+                            f"*Total Amount:* {format_usd(total_amount)}\n"
+                            f"*Items:*\n{chr(10).join(approved_item_summaries)}\n\n"
+                            f"The amount is now in Pending Spend."
+                        ),
+                    )
+                    if original_channel_id and original_message_ts:
+                        try:
+                            bolt_app.client.reactions_add(
+                                channel=original_channel_id,
+                                timestamp=original_message_ts,
+                                name="white_check_mark",
+                            )
+                        except Exception as e:
+                            logger.warning("Failed to add checkmark reaction: %s", e)
+                    bolt_app.client.chat_postMessage(
+                        channel=settings.manager_channel_id,
+                        thread_ts=thread_ts,
+                        text=(
+                            f"✅ Approved and logged {len(items)} item(s). Notified <@{requester_id}>.\n"
+                            f"*Total:* {format_usd(total_amount)}"
+                        ),
+                    )
+                else:
+                    PENDING_REJECTION_REASONS[thread_ts] = {
+                        "created_at": time.time(),
+                        "request_id": request_id,
+                        "requester_id": requester_id,
+                        "manager_id": manager_id,
+                        "items": items,
+                        "total_amount": total_amount,
+                        "original_channel_id": original_channel_id,
+                        "original_message_ts": original_message_ts,
+                    }
+                    bolt_app.client.chat_postMessage(
+                        channel=settings.manager_channel_id,
+                        thread_ts=thread_ts,
+                        text=(
+                            f"<@{manager_id}> please reply with the rejection reason.\n"
+                            f"I'll forward it to <@{requester_id}> via DM.\n\n"
+                            f"*Request ID:* {request_id}\n"
+                            f"*Items:* {len(items)}\n"
+                            f"*Total:* {format_usd(total_amount)}"
+                        ),
+                    )
+            except Exception:
+                logger.exception("Error processing approval/rejection from manager thread")
+            finally:
+                with decision_inflight_lock:
+                    decision_inflight_threads.discard(thread_ts)
+
+        EXECUTOR.submit(run_approval)
+
+    def _scan_manager_channel_for_missed_decisions(interval_seconds: int) -> None:
+        """
+        Periodically scan manager thread roots and process missed decisions for under_review requests.
+        """
+        while True:
+            try:
+                history = bolt_app.client.conversations_history(
+                    channel=settings.manager_channel_id,
+                    limit=MANAGER_DECISION_SCAN_HISTORY_LIMIT,
+                )
+                messages = history.get("messages") or []
+                request_threads: dict[str, str] = {}
+
+                for msg in messages:
+                    message_ts = (msg.get("ts") or "").strip()
+                    if not message_ts:
+                        continue
+
+                    # Only scan root messages.
+                    if msg.get("thread_ts") and msg.get("thread_ts") != message_ts:
+                        continue
+
+                    request_id = _extract_request_id_from_text(msg.get("text"))
+                    if not request_id:
+                        request_id = _extract_request_id_from_blocks(msg.get("blocks"))
+                    if not request_id or request_id in request_threads:
+                        continue
+                    thread_ts = (msg.get("thread_ts") or message_ts).strip()
+                    if not thread_ts:
+                        continue
+                    request_threads[request_id] = thread_ts
+
+                if not request_threads:
+                    time.sleep(interval_seconds)
+                    continue
+
+                try:
+                    entries_by_request_id = sheets.get_purchase_log_entries_for_request_ids(
+                        request_ids=set(request_threads.keys())
+                    )
+                except Exception:
+                    logger.exception(
+                        "Scanner failed reading Purchases_Log for %s request(s)",
+                        len(request_threads),
+                    )
+                    time.sleep(interval_seconds)
+                    continue
+
+                for request_id, log_entries in entries_by_request_id.items():
+                    if not log_entries or not all(entry.status == "under_review" for entry in log_entries):
+                        continue
+
+                    thread_ts = request_threads.get(request_id, "").strip()
+                    if not thread_ts:
+                        continue
+
+                    recovered_decision = _recover_manager_decision_from_thread(
+                        client=bolt_app.client,
+                        channel_id=settings.manager_channel_id,
+                        thread_ts=thread_ts,
+                    )
+                    if not recovered_decision:
+                        continue
+
+                    recovered_is_approved, recovered_manager_id, recovered_approved_line_numbers = recovered_decision
+                    approval_data = {
+                        "user_id": log_entries[0].requester_id,
+                        "request_id": log_entries[0].request_id,
+                        "items": [
+                            {
+                                "line_number": entry.bundle_line_number,
+                                "subteam_tab": entry.subteam,
+                                "reference_id": entry.reference_id,
+                                "item_name": entry.item_name,
+                                "requested_amount": entry.amount_usd,
+                                "is_unaccounted": entry.is_unaccounted,
+                                "reason": entry.purchase_reason,
+                            }
+                            for entry in log_entries
+                        ],
+                        "original_channel_id": None,
+                        "original_message_ts": None,
+                    }
+
+                    _submit_manager_decision_processing(
+                        approval_data=approval_data,
+                        is_approved=recovered_is_approved,
+                        approved_line_numbers=recovered_approved_line_numbers,
+                        manager_id=recovered_manager_id,
+                        thread_ts=thread_ts,
+                    )
+            except Exception:
+                logger.exception("Manager decision scanner iteration failed")
+
+            time.sleep(interval_seconds)
+
+    def _extract_receipt_link_from_file_obj(file_obj: dict[str, Any]) -> str | None:
+        permalink = file_obj.get("permalink")
+        if isinstance(permalink, str) and permalink.strip():
+            return permalink.strip()
+
+        url_private = file_obj.get("url_private")
+        if isinstance(url_private, str) and url_private.strip():
+            return url_private.strip()
+
+        file_id = file_obj.get("id")
+        if isinstance(file_id, str) and file_id.strip():
+            return f"https://files.slack.com/files-pri/{file_id.strip()}"
+
+        return None
+
+    def _find_recent_receipt_link_for_user(
+        client,
+        channel_id: str,
+        user_id: str,
+        *,
+        min_message_ts: str | None = None,
+    ) -> tuple[str | None, str | None]:
+        """
+        Return (receipt_link, source_message_ts) for the latest user-posted image
+        from channel-level messages (not thread replies).
+        """
+        try:
+            history = client.conversations_history(channel=channel_id, limit=30)
+        except Exception:
+            logger.exception("Failed to load channel history for receipt lookup")
+            return None, None
+
+        for msg in history.get("messages") or []:
+            # Only accept top-level channel messages, not thread replies.
+            if msg.get("thread_ts") and msg.get("thread_ts") != msg.get("ts"):
+                continue
+            if (msg.get("user") or "") != user_id:
+                continue
+            message_ts = str(msg.get("ts") or "")
+            if min_message_ts:
+                try:
+                    if float(message_ts) <= float(min_message_ts):
+                        continue
+                except Exception:
+                    continue
+            files = msg.get("files") or []
+            if not files:
+                continue
+            for file_obj in files:
+                if not isinstance(file_obj, dict):
+                    continue
+                mimetype = str(file_obj.get("mimetype") or "").lower()
+                filetype = str(file_obj.get("filetype") or "").lower()
+                if mimetype.startswith("image/") or filetype in {"png", "jpg", "jpeg", "gif", "webp", "heic", "heif"}:
+                    link = _extract_receipt_link_from_file_obj(file_obj)
+                    if link:
+                        return link, message_ts
+
+        return None, None
+
+    def _is_recent_slack_message_ts(message_ts: str | None, max_age_seconds: int) -> bool:
+        if not message_ts:
+            return False
+        try:
+            posted_at = float(message_ts)
+        except Exception:
+            return False
+        return (time.time() - posted_at) <= float(max_age_seconds)
+
+    def _open_purchase_modal(client, *, trigger_id: str, channel_id: str, user_id: str, is_bulk_order: bool, initial_text: str) -> None:
+        callback_id = "bigorder_request_modal" if is_bulk_order else "purchase_request_modal"
+        title_text = "Bigorder Request" if is_bulk_order else "Purchase Request"
+        submit_text = "Review"
+        details_label = "Bundle Lines" if is_bulk_order else "Request Details"
+        details_hint = (
+            "One item per line: reference_id, amount, reason" if is_bulk_order
+            else "Format: reference_id, amount, reason"
+        )
+
+        client.views_open(
+            trigger_id=trigger_id,
+            view={
+                "type": "modal",
+                "callback_id": callback_id,
+                "private_metadata": json.dumps(
+                    {
+                        "channel_id": channel_id,
+                        "user_id": user_id,
+                        "is_bulk_order": is_bulk_order,
+                    }
+                ),
+                "title": {"type": "plain_text", "text": title_text},
+                "submit": {"type": "plain_text", "text": submit_text},
+                "close": {"type": "plain_text", "text": "Cancel"},
+                "blocks": [
+                    {
+                        "type": "input",
+                        "block_id": "command_text_block",
+                        "label": {"type": "plain_text", "text": details_label},
+                        "element": {
+                            "type": "plain_text_input",
+                            "action_id": "command_text_input",
+                            "multiline": True,
+                            "initial_value": initial_text,
+                            "placeholder": {"type": "plain_text", "text": details_hint},
+                        },
+                        "hint": {"type": "plain_text", "text": details_hint},
+                    },
+                ],
+            },
+        )
+
+    def _handle_purchase_modal_submission(ack, body, client, *, is_bulk_order: bool) -> None:
+        view = body.get("view") or {}
+        state_values = ((view.get("state") or {}).get("values") or {})
+        command_text = (
+            ((state_values.get("command_text_block") or {}).get("command_text_input") or {}).get("value")
+            or ""
+        ).strip()
+
+        errors: dict[str, str] = {}
+        parsed_single = None
+        parsed_bulk = None
+        if is_bulk_order:
+            parsed_bulk = parse_bulk_purchase_text(command_text, command_keyword="/bigorder")
+            if not parsed_bulk.ok:
+                errors["command_text_block"] = parsed_bulk.error_message or "Invalid bigorder request."
+        else:
+            parsed_single = parse_purchase_text(command_text, command_keyword="/purchase")
+            if not parsed_single.ok:
+                errors["command_text_block"] = parsed_single.error_message or "Invalid purchase request."
+
+        if errors:
+            ack(response_action="errors", errors=errors)
+            return
+
+        ack()
+
+        private_metadata_raw = view.get("private_metadata") or "{}"
+        try:
+            private_metadata = json.loads(private_metadata_raw)
+        except Exception:
+            logger.warning("Invalid purchase modal private metadata")
+            return
+
+        channel_id = private_metadata.get("channel_id")
+        user_id = private_metadata.get("user_id")
+        if not channel_id or not user_id:
+            logger.warning("Missing required private metadata for purchase modal submission")
+            return
+
+        # Intentionally defer receipt detection until Confirm so users can post
+        # draft details first, then upload receipt image.
+        receipt_link = ""
+
+        if is_bulk_order and parsed_bulk and parsed_bulk.ok:
+            total_amount = sum(float(item.requested_amount or 0.0) for item in parsed_bulk.items)
+            draft_lines = [
+                f"Item {item.line_number}: {item.reference_id} | {format_usd(float(item.requested_amount or 0.0))} | {item.reason}"
+                for item in parsed_bulk.items
+            ]
+            draft_text = (
+                f"Bulk purchase request draft by <@{user_id}>\n"
+                f"Items: {len(parsed_bulk.items)} | Total: {format_usd(float(total_amount))}\n"
+                + "\n".join(draft_lines)
+            )
+        elif parsed_single and parsed_single.ok:
+            draft_text = (
+                f"Purchase request draft by <@{user_id}>\n"
+                f"{parsed_single.reference_id} | {format_usd(float(parsed_single.requested_amount or 0.0))} | {parsed_single.reason}"
+            )
+        else:
+            draft_text = (
+                f"Bulk purchase request draft created by <@{user_id}>."
+                if is_bulk_order
+                else f"Purchase request draft created by <@{user_id}>."
+            )
+
+        try:
+            anchor = client.chat_postMessage(
+                channel=channel_id,
+                text=draft_text,
+            )
+        except Exception:
+            logger.exception("Failed to create purchase draft anchor message from modal submission")
+            return
+
+        _start_purchase_confirmation_flow(
+            client=client,
+            user_id=user_id,
+            channel_id=channel_id,
+            command_text=command_text,
+            is_bulk_order=is_bulk_order,
+            original_message_ts=str(anchor.get("ts") or ""),
+            receipt_link=receipt_link,
+        )
+
+    def _start_purchase_confirmation_flow(
+        *,
+        client,
+        user_id: str,
+        channel_id: str,
+        command_text: str,
+        is_bulk_order: bool,
+        original_message_ts: str,
+        receipt_link: str,
+    ) -> None:
+        def run() -> None:
+            try:
+                if is_bulk_order:
+                    parsed_bulk = parse_bulk_purchase_text(
+                        command_text,
+                        command_keyword="/bigorder",
+                    )
+                    if not parsed_bulk.ok:
+                        _post_thread_message_with_delete_button(
+                            client=client,
+                            channel_id=channel_id,
+                            thread_ts=original_message_ts,
+                            message_text=parsed_bulk.error_message or "Invalid bulk order request.",
+                        )
+                        return
+                    parsed_items = parsed_bulk.items
+                else:
+                    parsed_single = parse_purchase_text(
+                        command_text,
+                        command_keyword="/purchase",
+                    )
+                    if not parsed_single.ok:
+                        _post_thread_message_with_delete_button(
+                            client=client,
+                            channel_id=channel_id,
+                            thread_ts=original_message_ts,
+                            message_text="Invalid purchase request. Use `/tutorial` to learn how to use the bot.",
+                        )
+                        return
+                    parsed_items = [parsed_single]
+
+                confirmation_items: list[dict[str, Any]] = []
+                for idx, parsed in enumerate(parsed_items, start=1):
+                    try:
+                        budget_lines = sheets.get_budget_lines(tab_name=parsed.subteam_tab)
+                        item_name = ""
+                        if parsed.is_unaccounted:
+                            item_name = parsed.provided_item_name or ""
+                        else:
+                            for line in budget_lines:
+                                if line.reference_id.upper() == parsed.reference_id.upper():
+                                    item_name = line.item_name
+                                    break
+                            if not item_name:
+                                _post_thread_message_with_delete_button(
+                                    client=client,
+                                    channel_id=channel_id,
+                                    thread_ts=original_message_ts,
+                                    message_text=(
+                                        f"Reference ID `{parsed.reference_id}` was not found in `{parsed.subteam_tab}`.\n"
+                                        "Use an existing reference ID, or use a `-000` ID for unaccounted items."
+                                    ),
+                                )
+                                return
+                    except WorksheetNotFound:
+                        client.chat_postMessage(
+                            channel=channel_id,
+                            thread_ts=original_message_ts,
+                            text=f'No tab found for subteam "{parsed.subteam_tab}".',
+                        )
+                        return
+                    except SheetsClientError as e:
+                        client.chat_postMessage(
+                            channel=channel_id,
+                            thread_ts=original_message_ts,
+                            text=f"Error accessing budget data: {str(e)}",
+                        )
+                        return
+
+                    confirmation_items.append(
+                        {
+                            "line_number": parsed.line_number or idx,
+                            "reference_id": parsed.reference_id,
+                            "subteam_tab": parsed.subteam_tab,
+                            "item_name": item_name,
+                            "requested_amount": parsed.requested_amount,
+                            "reason": parsed.reason,
+                            "is_unaccounted": parsed.is_unaccounted,
+                        }
+                    )
+
+                confirmation_data = {
+                    "items": confirmation_items,
+                    "channel_id": channel_id,
+                    "user_id": user_id,
+                    "original_message_ts": original_message_ts,
+                    "receipt_link": receipt_link,
+                    "is_bulk_order": is_bulk_order,
+                }
+
+                blocks = [
+                    {
+                        "type": "section",
+                        "text": {
+                            "type": "mrkdwn",
+                            "text": f"*<@{user_id}>, please confirm your purchase request:*"
+                        }
+                    },
+                ]
+                if len(confirmation_items) == 1:
+                    item = confirmation_items[0]
+                    blocks.append(
+                        {
+                            "type": "section",
+                            "fields": [
+                                {"type": "mrkdwn", "text": f"*Reference ID:*\n{item['reference_id']}"},
+                                {"type": "mrkdwn", "text": f"*Item:*\n{item['item_name']}"},
+                                {"type": "mrkdwn", "text": f"*Amount:*\n{format_usd(float(item['requested_amount']))}"},
+                                {"type": "mrkdwn", "text": f"*Reason:*\n{item['reason']}"},
+                            ]
+                        }
+                    )
+                else:
+                    blocks.append(
+                        {
+                            "type": "section",
+                            "text": {
+                                "type": "mrkdwn",
+                                "text": (
+                                    f"*Items:* {len(confirmation_items)}\n"
+                                    f"*Total:* {format_usd(_bundle_total_amount(confirmation_items))}\n"
+                                    f"{_format_item_lines_for_message(confirmation_items)}"
+                                ),
+                            },
+                        }
+                    )
+                blocks.extend(
+                    [
+                        {
+                            "type": "context",
+                            "elements": [
+                                {
+                                    "type": "mrkdwn",
+                                    "text": (
+                                        "✅ Receipt link provided"
+                                        if receipt_link
+                                        else "📎 No receipt link yet. Upload receipt image in channel, then click Confirm."
+                                    ),
+                                }
+                            ]
+                        },
+                        {
+                            "type": "actions",
+                            "elements": [
+                                {
+                                    "type": "button",
+                                    "text": {"type": "plain_text", "text": "Confirm"},
+                                    "style": "primary",
+                                    "action_id": "confirm_purchase",
+                                    "value": json.dumps(confirmation_data)
+                                },
+                                {
+                                    "type": "button",
+                                    "text": {"type": "plain_text", "text": "Cancel"},
+                                    "style": "danger",
+                                    "action_id": "cancel_purchase",
+                                    "value": json.dumps(confirmation_data)
+                                }
+                            ]
+                        }
+                    ]
+                )
+
+                client.chat_postMessage(
+                    channel=channel_id,
+                    thread_ts=original_message_ts,
+                    text="Please confirm your purchase request:",
+                    blocks=blocks
+                )
+            except Exception:
+                logger.exception("Error processing purchase request command (user=%s)", user_id)
+                try:
+                    _post_thread_message_with_delete_button(
+                        client=client,
+                        channel_id=channel_id,
+                        thread_ts=original_message_ts,
+                        message_text="An unexpected error occurred while processing your request. Please try again.",
+                    )
+                except Exception:
+                    pass
+
+        EXECUTOR.submit(run)
+
+    @bolt_app.command("/purchase")
+    def handle_purchase_command(ack, body, client):
+        ack()
+
+        user_id = body.get("user_id")
+        channel_id = body.get("channel_id")
+        trigger_id = body.get("trigger_id")
+        command_text = (body.get("text") or "").strip()
+
+        if not user_id or not channel_id or not trigger_id:
+            return
+        try:
+            _open_purchase_modal(
+                client,
+                trigger_id=trigger_id,
+                channel_id=channel_id,
+                user_id=user_id,
+                is_bulk_order=False,
+                initial_text=command_text,
+            )
+        except Exception:
+            logger.exception("Failed to open /purchase modal")
+
+    @bolt_app.command("/bigorder")
+    def handle_bigorder_command(ack, body, client):
+        ack()
+
+        user_id = body.get("user_id")
+        channel_id = body.get("channel_id")
+        trigger_id = body.get("trigger_id")
+        command_text = (body.get("text") or "").strip()
+
+        if not user_id or not channel_id or not trigger_id:
+            return
+        try:
+            _open_purchase_modal(
+                client,
+                trigger_id=trigger_id,
+                channel_id=channel_id,
+                user_id=user_id,
+                is_bulk_order=True,
+                initial_text=command_text,
+            )
+        except Exception:
+            logger.exception("Failed to open /bigorder modal")
+
+    @bolt_app.command("/reference")
+    def handle_reference_command(ack, body, client):
+        ack()
+
+        user_id = body.get("user_id")
+        channel_id = body.get("channel_id")
+        raw_text = (body.get("text") or "").strip()
+
+        if not user_id or not channel_id:
+            return
+
+        tokens = raw_text.split()
+        if len(tokens) != 1:
+            client.chat_postEphemeral(
+                channel=channel_id,
+                user=user_id,
+                text="Usage: `/reference <subteam_prefix>` (example: `/reference MECH`)",
+            )
+            return
+
+        prefix = tokens[0].upper()
+        tab_name = REFERENCE_ID_PREFIX_TO_TAB.get(prefix)
+        if not tab_name:
+            valid_prefixes = ", ".join(REFERENCE_ID_PREFIX_TO_TAB.keys())
+            client.chat_postEphemeral(
+                channel=channel_id,
+                user=user_id,
+                text=f"Unknown prefix `{prefix}`. Valid prefixes: {valid_prefixes}",
+            )
+            return
+
+        def run_reference_lookup() -> None:
+            try:
+                lines = sheets.get_budget_lines(tab_name=tab_name, force_refresh=True)
+                rows = [
+                    (line.reference_id, line.item_name or "(no item name)")
+                    for line in lines
+                    if line.reference_id
+                ]
+                dm_text = format_reference_lookup_dm(prefix=prefix, tab_name=tab_name, rows=rows)
+
+                client.chat_postMessage(
+                    channel=user_id,
+                    text=dm_text,
+                    mrkdwn=True,
+                    unfurl_links=False,
+                    unfurl_media=False,
+                )
+
+                client.chat_postEphemeral(
+                    channel=channel_id,
+                    user=user_id,
+                    text=f"Sent you a DM with the *{prefix}* reference list.",
+                )
+            except WorksheetNotFound:
+                client.chat_postEphemeral(
+                    channel=channel_id,
+                    user=user_id,
+                    text=f"Could not find the *{tab_name}* tab in Google Sheets.",
+                )
+            except Exception:
+                logger.exception("Failed to process /reference for prefix=%s", prefix)
+                client.chat_postEphemeral(
+                    channel=channel_id,
+                    user=user_id,
+                    text="Could not fetch references right now. Please try again.",
+                )
+
+        EXECUTOR.submit(run_reference_lookup)
+
+    @bolt_app.view("purchase_request_modal")
+    def handle_purchase_request_modal(ack, body, client):
+        _handle_purchase_modal_submission(ack, body, client, is_bulk_order=False)
+
+    @bolt_app.view("bigorder_request_modal")
+    def handle_bigorder_request_modal(ack, body, client):
+        _handle_purchase_modal_submission(ack, body, client, is_bulk_order=True)
+
+    def _build_tutorial_blocks(owner_id: str, selected: str) -> list[dict[str, Any]]:
+            selected_mode = selected if selected in {"purchase", "bigorder"} else "purchase"
+            purchase_value = json.dumps({"owner_id": owner_id, "selected": "purchase"})
+            bigorder_value = json.dumps({"owner_id": owner_id, "selected": "bigorder"})
+            delete_value = json.dumps({"owner_id": owner_id})
+
+            if selected_mode == "purchase":
+                guide_title = "Help: /purchase"
+                guide_text = (
+                    "*How to use `/purchase`*\n"
+                    "1. Run `/purchase` to open the request form\n"
+                    "2. Enter `reference_id, amount, reason`\n"
+                    "3. Click *Review* to post your draft details\n"
+                    "4. Upload your receipt image in the channel\n"
+                    "5. Click *Confirm*"
+                )
+                examples_text = (
+                    "*Examples*\n"
+                    "`/purchase` (opens blank form)\n"
+                    "`/purchase EECS-025, 42.50, Zipties for cable management` (prefills details)\n"
+                    "`/purchase ADMIN-000 Office Supplies, 50.00, Need for workspace`\n"
+                    "(for `-000` IDs, include an item name after the reference ID)"
+                )
+            else:
+                guide_title = "Help: /bigorder"
+                guide_text = (
+                    "*How to use `/bigorder`*\n"
+                    "1. Run `/bigorder` to open the request form\n"
+                    "2. Enter one item per line\n"
+                    "3. Click *Review* to post your draft details\n"
+                    "4. Upload your receipt image in the channel\n"
+                    "5. Click *Confirm*"
+                )
+                examples_text = (
+                    "*Example*\n"
+                    "```\n"
+                    "/bigorder\n"
+                    "EECS-025, 42.50, Zipties\n"
+                    "EECS-010, 15.00, Ferrules\n"
+                    "ADMIN-000 Office Supplies, 50.00, Team workspace\n"
+                    "```\n"
+                    "All lines are logged under one Request ID."
+                )
+
+            return [
+                {
+                    "type": "header",
+                    "text": {"type": "plain_text", "text": "FEB Purchase Bot Tutorial"},
+                },
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": "Choose which command you want help with:",
+                    },
+                },
+                {
+                    "type": "actions",
+                    "elements": [
+                        {
+                            "type": "button",
+                            "text": {"type": "plain_text", "text": "Purchase Help"},
+                            **({"style": "primary"} if selected_mode == "purchase" else {}),
+                            "action_id": "tutorial_help_purchase",
+                            "value": purchase_value,
+                        },
+                        {
+                            "type": "button",
+                            "text": {"type": "plain_text", "text": "Bigorder Help"},
+                            **({"style": "primary"} if selected_mode == "bigorder" else {}),
+                            "action_id": "tutorial_help_bigorder",
+                            "value": bigorder_value,
+                        },
+                    ],
+                },
+                {
+                    "type": "section",
+                    "text": {"type": "mrkdwn", "text": f"*{guide_title}*\n{guide_text}"},
+                },
+                {
+                    "type": "section",
+                    "text": {"type": "mrkdwn", "text": examples_text},
+                },
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": (
+                            "*Receipt link tip*\n"
+                            "No link paste needed. Upload receipt after the draft appears, then click Confirm."
+                        ),
+                    },
+                },
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": (
+                            "*What happens next*\n"
+                            "- Your request is sent to managers for review\n"
+                            "- You receive a DM if approved or rejected\n"
+                            "- If approved, amount is added to Pending Spend\n"
+                            "- Need subteam item IDs? Use `/reference <subteam_prefix>` (example: `/reference MECH`)\n"
+                            "- Use `/reimburse reference_id, amount` when reimbursement is completed"
+                        ),
+                    },
+                },
+                {
+                    "type": "actions",
+                    "elements": [
+                        {
+                            "type": "button",
+                            "text": {"type": "plain_text", "text": "Delete tutorial"},
+                            "style": "danger",
+                            "action_id": "delete_tutorial_message",
+                            "value": delete_value,
+                        }
+                    ],
+                },
+            ]
 
     @bolt_app.command("/tutorial")
     def handle_tutorial_command(ack, body, client):
@@ -125,74 +1259,98 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
 
         requester_id = body.get("user_id")
         channel_id = body.get("channel_id")
-        command_keyword = settings.purchase_command_keyword
 
         if not requester_id or not channel_id:
             return
 
-        delete_value = json.dumps({"owner_id": requester_id})
-        blocks = [
-            {
-                "type": "header",
-                "text": {"type": "plain_text", "text": "FEB Purchase Bot Tutorial"},
-            },
-            {
-                "type": "section",
-                "text": {
-                    "type": "mrkdwn",
-                    "text": (
-                        "*How to submit a purchase request*\n"
-                        f"1. Send a message that starts with `{command_keyword}`\n"
-                        "2. Use this format: `<reference_id>, <amount>, <reason>`\n"
-                        "3. Attach your receipt image to the same message\n"
-                        "4. Click *Confirm* when the bot asks for confirmation"
-                    ),
-                },
-            },
-            {
-                "type": "section",
-                "text": {
-                    "type": "mrkdwn",
-                    "text": (
-                        "*Example*\n"
-                        f"`{command_keyword} ADMIN-001, 50.00, Need for supplies`\n"
-                        "(with a receipt image attached to the same message)"
-                    ),
-                },
-            },
-            {
-                "type": "section",
-                "text": {
-                    "type": "mrkdwn",
-                    "text": (
-                        "*What happens next*\n"
-                        "- Your request is sent to managers for review\n"
-                        "- You receive a DM if approved or rejected\n"
-                        "- If approved, amount is added to Pending Spend\n"
-                        "- Use `/reimburse <reference_id>, <amount>` when reimbursement is completed\n"
-                        "- If rejected, the manager must provide a reason"
-                    ),
-                },
-            },
-            {
-                "type": "actions",
-                "elements": [
-                    {
-                        "type": "button",
-                        "text": {"type": "plain_text", "text": "Delete tutorial"},
-                        "style": "danger",
-                        "action_id": "delete_bot_message",
-                        "value": delete_value,
-                    }
-                ],
-            },
-        ]
+        blocks = _build_tutorial_blocks(requester_id, "purchase")
 
         client.chat_postMessage(
             channel=channel_id,
             text="How to submit a purchase request",
             blocks=blocks,
         )
+
+    def _handle_tutorial_help_action(ack, body, client, selected: str) -> None:
+        ack()
+
+        channel_id = body.get("channel", {}).get("id")
+        message_ts = body.get("message", {}).get("ts")
+        actor_id = body.get("user", {}).get("id")
+        raw_value = (body.get("actions") or [{}])[0].get("value")
+
+        if not channel_id or not message_ts or not actor_id or not raw_value:
+            return
+
+        try:
+            payload = json.loads(raw_value)
+        except Exception:
+            logger.warning("Invalid tutorial help payload")
+            return
+
+        owner_id = payload.get("owner_id")
+        if not owner_id:
+            return
+
+        if actor_id != owner_id:
+            client.chat_postEphemeral(
+                channel=channel_id,
+                user=actor_id,
+                text=f"Only <@{owner_id}> can switch this tutorial view.",
+            )
+            return
+
+        blocks = _build_tutorial_blocks(owner_id, selected)
+
+        try:
+            client.chat_update(
+                channel=channel_id,
+                ts=message_ts,
+                text="How to submit a purchase request",
+                blocks=blocks,
+            )
+        except Exception:
+            logger.exception("Failed to update tutorial help view")
+
+    @bolt_app.action("tutorial_help_purchase")
+    def handle_tutorial_help_purchase(ack, body, client):
+        _handle_tutorial_help_action(ack, body, client, "purchase")
+
+    @bolt_app.action("tutorial_help_bigorder")
+    def handle_tutorial_help_bigorder(ack, body, client):
+        _handle_tutorial_help_action(ack, body, client, "bigorder")
+
+    @bolt_app.action("delete_tutorial_message")
+    def handle_delete_tutorial_message(ack, body, client):
+        ack()
+
+        channel_id = body.get("channel", {}).get("id")
+        message_ts = body.get("message", {}).get("ts")
+        actor_id = body.get("user", {}).get("id")
+        raw_value = (body.get("actions") or [{}])[0].get("value")
+
+        if not channel_id or not message_ts or not actor_id or not raw_value:
+            return
+
+        try:
+            payload = json.loads(raw_value)
+        except Exception:
+            logger.warning("Invalid delete_tutorial_message payload")
+            return
+
+        owner_id = payload.get("owner_id") if isinstance(payload, dict) else None
+        if owner_id and actor_id != owner_id:
+            client.chat_postEphemeral(
+                channel=channel_id,
+                user=actor_id,
+                text=f"Only <@{owner_id}> can delete this tutorial.",
+            )
+            return
+
+        try:
+            client.chat_delete(channel=channel_id, ts=message_ts)
+        except Exception:
+            logger.exception("Failed to delete tutorial message")
 
     @bolt_app.command("/reimburse")
     def handle_reimburse_command(ack, body, client):
@@ -218,7 +1376,7 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
             client.chat_postEphemeral(
                 channel=channel_id,
                 user=user_id,
-                text="Usage: `/reimburse <reference_id>, <amount>` (example: `/reimburse ADMIN-013, 20`)",
+                text="Usage: `/reimburse reference_id, amount` (example: `/reimburse ADMIN-013, 20`)",
             )
             return
 
@@ -260,23 +1418,53 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
 
         def run_reimburse() -> None:
             try:
-                success = sheets.reimburse_by_id(
+                reimbursement_result = sheets.reimburse_by_id(
                     tab_name=tab_name,
                     reference_id=reference_id,
                     amount=float(amount),
                 )
-                if not success:
+                if reimbursement_result is None:
                     client.chat_postMessage(
                         channel=channel_id,
                         text=f"❌ Could not find `{reference_id}` in *{tab_name}*.",
                     )
                     return
 
+                bank_before = sheets.get_bank_available()
+                bank_after = bank_before - float(reimbursement_result.amount_reimbursed)
+                bank_updated = sheets.update_bank_available(bank_after)
+                if not bank_updated:
+                    client.chat_postMessage(
+                        channel=channel_id,
+                        text="❌ Reimbursement updated item spend, but failed to update bank balance. Please check _Config manually.",
+                    )
+                    return
+
+                completed_at_utc = datetime.now(timezone.utc).isoformat()
+                reimbursement_id = f"RB-{reference_id}-{int(time.time())}"
+                sheets.append_reimbursement_log(
+                    reimbursement_id=reimbursement_id,
+                    requested_at_utc=completed_at_utc,
+                    completed_at_utc=completed_at_utc,
+                    status="completed",
+                    manager_id=user_id,
+                    person_reimbursed="unknown",
+                    reference_id=reference_id,
+                    subteam=tab_name,
+                    item_name=reimbursement_result.item_name,
+                    amount_requested_usd=float(reimbursement_result.amount_requested),
+                    amount_reimbursed_usd=float(reimbursement_result.amount_reimbursed),
+                    bank_before=float(bank_before),
+                    bank_after=float(bank_after),
+                    notes="",
+                )
+
                 client.chat_postMessage(
                     channel=channel_id,
                     text=(
                         f"✅ Reimbursement recorded for `{reference_id}` in *{tab_name}*.\n"
-                        f"Moved {format_usd(float(amount))} from *Pending Spend* to *Actual Spend*."
+                        f"Moved {format_usd(float(reimbursement_result.amount_reimbursed))} from *Pending Spend* to *Actual Spend*.\n"
+                        f"Bank: {format_usd(float(bank_before))} → {format_usd(float(bank_after))}"
                     ),
                 )
             except Exception:
@@ -328,18 +1516,47 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
         ack()
 
         # Parse the confirmation data from the button payload.
-        confirmation_data = json.loads(body["actions"][0]["value"])
-        reference_id = confirmation_data["reference_id"]
-        subteam_tab = confirmation_data["subteam_tab"]
-        item_name = confirmation_data["item_name"]
-        requested_amount = confirmation_data["requested_amount"]
-        reason = confirmation_data["reason"]
-        channel_id = confirmation_data["channel_id"]
-        user_id = confirmation_data["user_id"]
-        original_message_ts = confirmation_data["original_message_ts"]
+        raw_value = (body.get("actions") or [{}])[0].get("value")
+        if not raw_value:
+            return
+
+        try:
+            confirmation_data = json.loads(raw_value)
+        except Exception:
+            logger.warning("Invalid confirm_purchase payload")
+            return
+
+        channel_id = confirmation_data.get("channel_id")
+        user_id = confirmation_data.get("user_id")
+        original_message_ts = confirmation_data.get("original_message_ts")
+        if not all([channel_id, user_id, original_message_ts]):
+            logger.warning("Missing required fields in confirm_purchase payload")
+            return
+
+        items = confirmation_data.get("items")
+        if not isinstance(items, list) or not items:
+            reference_id = confirmation_data.get("reference_id")
+            subteam_tab = confirmation_data.get("subteam_tab")
+            item_name = confirmation_data.get("item_name")
+            requested_amount = confirmation_data.get("requested_amount")
+            reason = confirmation_data.get("reason")
+            is_unaccounted = confirmation_data.get("is_unaccounted", False)
+            if not all([reference_id, subteam_tab, item_name, reason, requested_amount]):
+                logger.warning("Missing item details in confirm_purchase payload")
+                return
+            items = [
+                {
+                    "line_number": 1,
+                    "reference_id": reference_id,
+                    "subteam_tab": subteam_tab,
+                    "item_name": item_name,
+                    "requested_amount": requested_amount,
+                    "reason": reason,
+                    "is_unaccounted": is_unaccounted,
+                }
+            ]
         receipt_link = confirmation_data.get("receipt_link")
-        is_unaccounted = confirmation_data.get("is_unaccounted", False)
-        
+
         # Get the confirmation message timestamp from the action body (the message containing the button)
         confirmation_message_ts = body.get("message", {}).get("ts")
 
@@ -353,7 +1570,6 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
             )
             return
 
-        # Check idempotency: prevent duplicate confirmation processing from the original requester
         confirmation_key = (user_id, channel_id, original_message_ts)
         if confirmation_key in PENDING_CONFIRMATIONS:
             client.chat_postMessage(
@@ -365,55 +1581,93 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
         PENDING_CONFIRMATIONS.add(confirmation_key)
 
         if not receipt_link:
-            PENDING_CONFIRMATIONS.discard(confirmation_key)
-            _post_thread_message_with_delete_button(
-                client=client,
-                channel_id=channel_id,
-                thread_ts=original_message_ts,
-                message_text="No receipt image found. Please attach an image to your purchase request message.",
+            lookup_min_ts = confirmation_message_ts or original_message_ts
+            auto_link, auto_link_ts = _find_recent_receipt_link_for_user(
+                client,
+                channel_id,
+                user_id,
+                min_message_ts=lookup_min_ts,
             )
-            return
+            if auto_link and _is_recent_slack_message_ts(auto_link_ts, RECEIPT_AUTO_LOOKBACK_SECONDS):
+                receipt_link = auto_link
+                confirmation_data["receipt_link"] = auto_link
+            else:
+                PENDING_CONFIRMATIONS.discard(confirmation_key)
+                client.chat_postMessage(
+                    channel=channel_id,
+                    thread_ts=original_message_ts,
+                    text="Please send your receipt image in the channel (not in this thread), then click Confirm again.",
+                )
+                return
 
         def run() -> None:
             try:
-                # Build budget report by reference_id lookup
-                lines = sheets.get_budget_lines(tab_name=subteam_tab)
-                report = build_budget_report(
-                    subteam=subteam_tab,
-                    reference_id=reference_id,
-                    item_name=item_name,
-                    requested_amount=float(requested_amount),
-                    lines=lines,
-                    is_unaccounted=is_unaccounted,
-                )
-
-                if report.status.value == "ITEM_NOT_FOUND" and not is_unaccounted:
-                    _post_thread_message_with_delete_button(
-                        client=client,
-                        channel_id=channel_id,
-                        thread_ts=original_message_ts,
-                        message_text=(
-                            f"Reference ID `{reference_id}` was not found in `{subteam_tab}` at confirmation time. "
-                            "Please verify and submit again."
-                        ),
+                manager_bundle_items: list[dict[str, Any]] = []
+                for item in items:
+                    subteam_tab = str(item["subteam_tab"])
+                    lines = sheets.get_budget_lines(tab_name=subteam_tab)
+                    report = build_budget_report(
+                        subteam=subteam_tab,
+                        reference_id=str(item["reference_id"]),
+                        item_name=str(item["item_name"]),
+                        requested_amount=float(item["requested_amount"]),
+                        lines=lines,
+                        is_unaccounted=bool(item.get("is_unaccounted", False)),
                     )
-                    return
+                    if report.status.value == "ITEM_NOT_FOUND" and not bool(item.get("is_unaccounted", False)):
+                        _post_thread_message_with_delete_button(
+                            client=client,
+                            channel_id=channel_id,
+                            thread_ts=original_message_ts,
+                            message_text=(
+                                f"Reference ID `{item['reference_id']}` was not found in `{subteam_tab}` at confirmation time. "
+                                "Please verify and submit again."
+                            ),
+                        )
+                        return
+                    manager_bundle_items.append(
+                        {
+                            "line_number": int(item["line_number"]),
+                            "report": report,
+                            "reason": str(item["reason"]),
+                            "raw_item": item,
+                        }
+                    )
 
-                # Assign request ID
                 try:
                     counter = sheets.get_and_increment_request_counter()
                     request_id = f"REQ-{counter:06d}"
                 except Exception as e:
-                    logger.warning("Failed to get request counter from Sheets, using fallback: %s", e)
-                    request_id = _request_id_fallback()
+                    logger.warning("Failed to get request counter from Sheets: %s", e)
+                    client.chat_postMessage(
+                        channel=channel_id,
+                        thread_ts=original_message_ts,
+                        text=(
+                            "⚠️ Could not submit your request right now because the request counter is temporarily unavailable. "
+                            "Please try again in a minute."
+                        ),
+                    )
+                    return
 
-                # Post to manager channel with report and receipt image
-                blocks = format_manager_notification_blocks(
-                    report, 
-                    user_id, 
-                    request_id=request_id,
-                    purchase_reason=reason
-                )
+                total_amount = _bundle_total_amount(items)
+                if len(manager_bundle_items) == 1:
+                    only_item = manager_bundle_items[0]
+                    blocks = format_manager_notification_blocks(
+                        only_item["report"],
+                        user_id,
+                        request_id=request_id,
+                        purchase_reason=only_item["reason"],
+                        item_budget_reject_threshold_percent_of_estimate=settings.item_budget_reject_threshold_percent_of_estimate,
+                    )
+                else:
+                    blocks = format_manager_bundle_notification_blocks(
+                        manager_bundle_items,
+                        user_id,
+                        request_id=request_id,
+                        total_amount=total_amount,
+                        item_budget_reject_threshold_percent_of_estimate=settings.item_budget_reject_threshold_percent_of_estimate,
+                    )
+
                 manager_post = client.chat_postMessage(
                     channel=settings.manager_channel_id,
                     text=f"Purchase request {request_id} from <@{user_id}>",
@@ -422,78 +1676,68 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                     unfurl_media=False,
                 )
 
-                # Post receipt in manager thread
                 manager_msg_ts = manager_post["ts"]
-                if receipt_link:
-                    client.chat_postMessage(
-                        channel=settings.manager_channel_id,
-                        thread_ts=manager_msg_ts,
-                        text=f"Receipt for {request_id}:",
-                        attachments=[{
-                            "fallback": "Receipt image",
-                            "image_url": receipt_link,
-                        }],
-                    )
-                else:
-                    client.chat_postMessage(
-                        channel=settings.manager_channel_id,
-                        thread_ts=manager_msg_ts,
-                        text="No receipt image available",
-                    )
+                client.chat_postMessage(
+                    channel=settings.manager_channel_id,
+                    thread_ts=manager_msg_ts,
+                    text=f"Receipt for {request_id}:",
+                    attachments=[{
+                        "fallback": "Receipt image",
+                        "image_url": receipt_link,
+                    }],
+                )
 
-                # Store metadata for approval tracking
                 PENDING_APPROVALS[manager_msg_ts] = {
                     "request_id": request_id,
                     "user_id": user_id,
-                    "subteam_tab": subteam_tab,
-                    "reference_id": reference_id,
-                    "item_name": item_name,
-                    "requested_amount": float(requested_amount),
+                    "items": items,
                     "original_channel_id": channel_id,
                     "original_message_ts": original_message_ts,
-                    "is_unaccounted": is_unaccounted,
                 }
 
-                # Log purchase request to Purchases_Log tab
                 submitted_at_utc = datetime.now(timezone.utc).isoformat()
-                
-                # Read before values for budget tracking
-                subteam_available_before = report.available_budget
                 try:
                     bank_available_before = sheets.get_bank_available()
                 except Exception as e:
                     logger.warning("Failed to read bank_available: %s", e)
                     bank_available_before = None
-                
-                sheets.append_purchase_log(
-                    request_id=request_id,
-                    submitted_at_utc=submitted_at_utc,
-                    requester_id=user_id,
-                    subteam=subteam_tab,
-                    reference_id=reference_id,
-                    item_name=item_name,
-                    purchase_reason=reason,
-                    amount_usd=float(requested_amount),
-                    subteam_available_before=subteam_available_before,
-                    bank_available_before=bank_available_before,
-                    receipt_link=receipt_link,
-                    bot_assessment=_recommendation_header(report),
-                )
 
-                # Send confirmation in thread
+                for bundle_item in manager_bundle_items:
+                    report = bundle_item["report"]
+                    raw_item = bundle_item["raw_item"]
+                    sheets.append_purchase_log(
+                        request_id=request_id,
+                        bundle_line_number=int(raw_item["line_number"]),
+                        submitted_at_utc=submitted_at_utc,
+                        requester_id=user_id,
+                        subteam=str(raw_item["subteam_tab"]),
+                        reference_id=str(raw_item["reference_id"]),
+                        item_name=str(raw_item["item_name"]),
+                        purchase_reason=str(raw_item["reason"]),
+                        amount_usd=float(raw_item["requested_amount"]),
+                        is_unaccounted=bool(raw_item.get("is_unaccounted", False)),
+                        subteam_available_before=report.available_budget,
+                        bank_available_before=bank_available_before,
+                        receipt_link=receipt_link,
+                        bot_assessment=_recommendation_header(
+                            report,
+                            settings.item_budget_reject_threshold_percent_of_estimate,
+                        ),
+                    )
+
                 client.chat_postMessage(
                     channel=channel_id,
                     thread_ts=original_message_ts,
-                    text=f"✅ Purchase request submitted! Request ID: *{request_id}*\nThis has been forwarded to the manager channel for review."
+                    text=(
+                        f"✅ Purchase request submitted! Request ID: *{request_id}*\n"
+                        f"Items: *{len(items)}* | Total: *{format_usd(total_amount)}*\n"
+                        "This has been forwarded to the manager channel for review."
+                    )
                 )
 
-                # Delete the confirmation button message so it can't be clicked again
                 if confirmation_message_ts:
                     try:
-                        client.chat_delete(
-                            channel=channel_id,
-                            ts=confirmation_message_ts
-                        )
+                        client.chat_delete(channel=channel_id, ts=confirmation_message_ts)
                     except Exception as e:
                         logger.warning("Failed to delete confirmation message: %s", e)
 
@@ -506,7 +1750,6 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                     message_text="An error occurred while processing your request. Please try again.",
                 )
             finally:
-                # Clear from pending confirmations once processing completes
                 PENDING_CONFIRMATIONS.discard(confirmation_key)
 
         EXECUTOR.submit(run)
@@ -514,11 +1757,24 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
     @bolt_app.action("cancel_purchase")
     def handle_cancel_purchase(ack, body, client):
         ack()
-        
-        confirmation_data = json.loads(body["actions"][0]["value"])
-        channel_id = confirmation_data["channel_id"]
-        user_id = confirmation_data["user_id"]
-        original_message_ts = confirmation_data["original_message_ts"]
+
+        raw_value = (body.get("actions") or [{}])[0].get("value")
+        if not raw_value:
+            return
+
+        try:
+            confirmation_data = json.loads(raw_value)
+        except Exception:
+            logger.warning("Invalid cancel_purchase payload")
+            return
+
+        channel_id = confirmation_data.get("channel_id")
+        user_id = confirmation_data.get("user_id")
+        original_message_ts = confirmation_data.get("original_message_ts")
+        if not channel_id or not user_id or not original_message_ts:
+            return
+
+        confirmation_message_ts = body.get("message", {}).get("ts")
         
         # Verify that only the original requester can cancel
         button_clicked_by = body["user"]["id"]
@@ -529,11 +1785,27 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                 text=f"❌ Only <@{user_id}> can cancel this purchase request."
             )
             return
+
+        confirmation_key = (user_id, channel_id, original_message_ts)
+        if confirmation_key in PENDING_CONFIRMATIONS:
+            client.chat_postMessage(
+                channel=channel_id,
+                thread_ts=original_message_ts,
+                text="⏳ This request has already been acted on."
+            )
+            return
+        PENDING_CONFIRMATIONS.add(confirmation_key)
+
+        if confirmation_message_ts:
+            try:
+                client.chat_delete(channel=channel_id, ts=confirmation_message_ts)
+            except Exception as e:
+                logger.warning("Failed to delete cancellation confirmation message: %s", e)
         
         client.chat_postMessage(
             channel=channel_id,
             thread_ts=original_message_ts,
-            text="Purchase request cancelled."
+            text="Purchase request cancelled, please delete your original message."
         )
 
     @bolt_app.event("message")
@@ -545,190 +1817,10 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
             return
 
         thread_ts = event.get("thread_ts")
-        
-        # Handle non-thread messages (purchase requests)
+
+        # Non-thread channel messages no longer trigger purchase parsing.
+        # Intake now happens via /purchase and /bigorder slash commands.
         if not thread_ts:
-            text = (event.get("text") or "").strip()
-            
-            # Check if this is a purchase request (starts with configured keyword)
-            keyword_lower = settings.purchase_command_keyword.lower()
-            keyword_with_space = keyword_lower.rstrip(":")
-            if text.lower().startswith(keyword_lower) or text.lower().startswith(keyword_with_space + " "):
-                # Extract the purchase details after the keyword
-                if text.lower().startswith(keyword_lower):
-                    purchase_text = text[len(keyword_lower):].strip()
-                else:
-                    purchase_text = text[len(keyword_with_space):].strip()
-                
-                user_id = event.get("user")
-                channel_id = event.get("channel")
-                files = event.get("files") or []
-                
-                def run() -> None:
-                    try:
-                        # Validate purchase format
-                        parse = parse_purchase_text(purchase_text)
-                        if not parse.ok:
-                            _post_thread_message_with_delete_button(
-                                client=client,
-                                channel_id=channel_id,
-                                thread_ts=event["ts"],
-                                message_text="Invalid purchase request. Use `/tutorial` to learn how to use the bot.",
-                            )
-                            return
-                        
-                        # Validate image attachment
-                        if not files:
-                            _post_thread_message_with_delete_button(
-                                client=client,
-                                channel_id=channel_id,
-                                thread_ts=event["ts"],
-                                message_text="Please attach a receipt image with your purchase request.",
-                            )
-                            return
-                        
-                        # Verify subteam tab exists and fetch item details
-                        try:
-                            budget_lines = sheets.get_budget_lines(tab_name=parse.subteam_tab)
-                            # Find the matching reference_id to get item_name
-                            item_name = ""
-                            
-                            # For unaccounted items (-000), use the provided item name
-                            if parse.is_unaccounted:
-                                item_name = parse.provided_item_name or ""
-                            else:
-                                # Look up existing item in budget
-                                for line in budget_lines:
-                                    if line.reference_id.upper() == parse.reference_id.upper():
-                                        item_name = line.item_name
-                                        break
-                                if not item_name:
-                                    _post_thread_message_with_delete_button(
-                                        client=client,
-                                        channel_id=channel_id,
-                                        thread_ts=event["ts"],
-                                        message_text=(
-                                            f"Reference ID `{parse.reference_id}` was not found in "
-                                            f"`{parse.subteam_tab}`.\n"
-                                            "Use an existing reference ID, or use a `-000` ID for unaccounted items."
-                                        ),
-                                    )
-                                    return
-                        except WorksheetNotFound:
-                            _post_thread_message_with_delete_button(
-                                client=client,
-                                channel_id=channel_id,
-                                thread_ts=event["ts"],
-                                message_text=f'No tab found for subteam "{parse.subteam_tab}".',
-                            )
-                            return
-                        except SheetsClientError as e:
-                            _post_thread_message_with_delete_button(
-                                client=client,
-                                channel_id=channel_id,
-                                thread_ts=event["ts"],
-                                message_text=f"Error accessing budget data: {str(e)}",
-                            )
-                            return
-                        
-                        # Extract receipt link from file object
-                        receipt_link = None
-                        if files:
-                            file_obj = files[0]
-                            # Try to get permalink from file object
-                            if "permalink" in file_obj:
-                                receipt_link = file_obj["permalink"]
-                            elif "url_private" in file_obj:
-                                receipt_link = file_obj["url_private"]
-                            elif "id" in file_obj:
-                                # Construct Slack file URL from file ID as fallback
-                                receipt_link = f"https://files.slack.com/files-pri/{file_obj.get('id', '')}"
-                            
-                            # If still no link, try to fetch via files.info API
-                            if not receipt_link and "id" in file_obj:
-                                try:
-                                    file_info = client.files_info(file=file_obj["id"])
-                                    if file_info.get("file"):
-                                        receipt_link = file_info["file"].get("permalink") or file_info["file"].get("url_private")
-                                except Exception as e:
-                                    logger.warning("Failed to get file info for %s: %s", file_obj.get("id"), e)
-                        
-                        # Build confirmation data
-                        confirmation_data = {
-                            "reference_id": parse.reference_id,
-                            "subteam_tab": parse.subteam_tab,
-                            "item_name": item_name,  # Fetched from sheet above
-                            "requested_amount": parse.requested_amount,
-                            "reason": parse.reason,
-                            "channel_id": channel_id,
-                            "user_id": user_id,
-                            "original_message_ts": event["ts"],
-                            "receipt_link": receipt_link,
-                            "is_unaccounted": parse.is_unaccounted,
-                        }
-                        
-                        # Show confirmation blocks
-                        blocks = [
-                            {
-                                "type": "section",
-                                "text": {
-                                    "type": "mrkdwn",
-                                    "text": f"*<@{user_id}>, please confirm your purchase request:*"
-                                }
-                            },
-                            {
-                                "type": "section",
-                                "fields": [
-                                    {"type": "mrkdwn", "text": f"*Reference ID:*\n{parse.reference_id}"},
-                                    {"type": "mrkdwn", "text": f"*Item:*\n{item_name}"},
-                                    {"type": "mrkdwn", "text": f"*Amount:*\n{format_usd(parse.requested_amount)}"},
-                                    {"type": "mrkdwn", "text": f"*Reason:*\n{parse.reason}"},
-                                ]
-                            },
-                            {
-                                "type": "context",
-                                "elements": [{"type": "mrkdwn", "text": "✅ Receipt image detected"}]
-                            },
-                            {
-                                "type": "actions",
-                                "elements": [
-                                    {
-                                        "type": "button",
-                                        "text": {"type": "plain_text", "text": "Confirm"},
-                                        "style": "primary",
-                                        "action_id": "confirm_purchase",
-                                        "value": json.dumps(confirmation_data)
-                                    },
-                                    {
-                                        "type": "button",
-                                        "text": {"type": "plain_text", "text": "Cancel"},
-                                        "style": "danger",
-                                        "action_id": "cancel_purchase",
-                                    }
-                                ]
-                            }
-                        ]
-                        
-                        client.chat_postMessage(
-                            channel=channel_id,
-                            thread_ts=event["ts"],
-                            text="Please confirm your purchase request:",
-                            blocks=blocks
-                        )
-                        
-                    except Exception:
-                        logger.exception("Error processing purchase request message (user=%s)", user_id)
-                        try:
-                            _post_thread_message_with_delete_button(
-                                client=client,
-                                channel_id=channel_id,
-                                thread_ts=event["ts"],
-                                message_text="An unexpected error occurred while processing your request. Please try again.",
-                            )
-                        except Exception:
-                            pass
-                
-                EXECUTOR.submit(run)
             return
         
         # Handle thread messages in manager channel
@@ -738,198 +1830,155 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
         if channel_id == settings.manager_channel_id:
             # Check for approval/rejection messages
             approval_data = PENDING_APPROVALS.get(thread_ts)
-            if approval_data:
-                text = (event.get("text") or "").strip()
-                manager_id = event.get("user")
-                
-                # Manager decisions are accepted only as a single emoji message.
-                approve_tokens = {"✅", ":white_check_mark:", ":heavy_check_mark:"}
-                reject_tokens = {"❌", ":x:", ":no_entry:"}
-                is_approved = text in approve_tokens
-                is_rejected = text in reject_tokens
-                
-                if is_approved or is_rejected:
-                    # Remove from pending to prevent duplicate processing
-                    PENDING_APPROVALS.pop(thread_ts, None)
-                    
-                    def run_approval() -> None:
-                        try:
-                            requester_id = approval_data["user_id"]
-                            request_id = approval_data["request_id"]
-                            item_name = approval_data["item_name"]
-                            amount = approval_data["requested_amount"]
-                            subteam_tab = approval_data["subteam_tab"]
-                            reference_id = approval_data["reference_id"]
-                            original_channel_id = approval_data.get("original_channel_id")
-                            original_message_ts = approval_data.get("original_message_ts")
-                            is_unaccounted = approval_data.get("is_unaccounted", False)
-                            available_budget_before: float | None = None
+            text = (event.get("text") or "").strip()
+            manager_id = event.get("user")
 
-                            if not is_unaccounted:
-                                try:
-                                    latest_lines = sheets.get_budget_lines(tab_name=subteam_tab, force_refresh=True)
-                                    matching_line = next(
-                                        (
-                                            line
-                                            for line in latest_lines
-                                            if line.reference_id.upper() == reference_id.upper()
-                                        ),
-                                        None,
-                                    )
-                                    if matching_line and matching_line.available_budget is not None:
-                                        available_budget_before = float(matching_line.available_budget)
-                                except Exception:
-                                    logger.warning(
-                                        "Could not read available budget before approval for %s in %s",
-                                        reference_id,
-                                        subteam_tab,
-                                    )
-                            
-                            if is_approved:
-                                # For unaccounted items, append to sheet first
-                                if is_unaccounted:
-                                    try:
-                                        new_ref_id = sheets.append_budget_line(
-                                            tab_name=subteam_tab,
-                                            item_name=item_name,
-                                            initial_spending=amount,
-                                        )
-                                        logger.info("Appended unaccounted item %r as %s", item_name, new_ref_id)
-                                    except Exception:
-                                        logger.exception("Failed to append unaccounted item to sheet")
-                                else:
-                                    # Update Google Sheet pending spending by reference_id
-                                    try:
-                                        success = sheets.update_pending_spending_by_id(
-                                            tab_name=subteam_tab,
-                                            reference_id=reference_id,
-                                            amount_to_add=amount,
-                                        )
-                                        if not success:
-                                            logger.warning("Could not find reference_id %r in sheet for update", reference_id)
-                                    except Exception:
-                                        logger.exception("Failed to update sheet for approved purchase")
+            is_approved, is_rejected, approved_line_numbers = _parse_manager_decision_text(text)
 
-                                # Log approval to Purchases_Log
-                                reviewed_at_utc = datetime.now(timezone.utc).isoformat()
-                                
-                                # Calculate after values
-                                subteam_available_after = (
-                                    available_budget_before - amount if available_budget_before is not None else None
-                                )
-                                
-                                # Update bank balance
-                                bank_available_after = None
-                                try:
-                                    current_bank = sheets.get_bank_available()
-                                    bank_available_after = current_bank - amount
-                                    sheets.update_bank_available(bank_available_after)
-                                except Exception as e:
-                                    logger.warning("Failed to update bank_available: %s", e)
-                                
-                                sheets.update_purchase_log_status(
-                                    request_id=request_id,
-                                    status="approved",
-                                    reviewed_at_utc=reviewed_at_utc,
-                                    manager_id=manager_id,
-                                    subteam_available_after=subteam_available_after,
-                                    bank_available_after=bank_available_after,
-                                )
+            if not approval_data and not (is_approved or is_rejected):
+                # Downtime recovery: if a manager decision was posted while the bot was down,
+                # recover it from thread history and process it now.
+                request_id = _resolve_request_id_for_manager_thread(client, channel_id, thread_ts)
+                if request_id:
+                    try:
+                        log_entries = sheets.get_purchase_log_entries(request_id=request_id)
+                    except Exception:
+                        logger.exception("Failed loading Purchases_Log entry for decision recovery: %s", request_id)
+                        log_entries = []
 
-                                # Notify member of approval
-                                client.chat_postMessage(
-                                    channel=requester_id,
-                                    text=(
-                                        f"✅ Your purchase request was *approved* by <@{manager_id}>!\n\n"
-                                        f"*Request ID:* {request_id}\n"
-                                        f"*Item:* {item_name}\n"
-                                        f"*Amount:* {format_usd(amount)}\n\n"
-                                        f"The amount is now in Pending Spend."
-                                    ),
-                                )
-                                
-                                # React with checkmark on original purchase request message
-                                if original_channel_id and original_message_ts:
-                                    try:
-                                        client.reactions_add(
-                                            channel=original_channel_id,
-                                            timestamp=original_message_ts,
-                                            name="white_check_mark"
-                                        )
-                                    except Exception as e:
-                                        logger.warning("Failed to add checkmark reaction: %s", e)
-                                
-                                # Confirm in manager thread
-                                budget_change_text = ""
-                                if available_budget_before is not None:
-                                    available_budget_after = available_budget_before - amount
-                                    budget_change_text = (
-                                        "\n"
-                                        f"*Subteam Available Budget:* {format_usd(available_budget_before)} "
-                                        f"-> {format_usd(available_budget_after)}"
-                                    )
+                    if log_entries and all(entry.status == "under_review" for entry in log_entries):
+                        recovered_decision = _recover_manager_decision_from_thread(
+                            client=client,
+                            channel_id=channel_id,
+                            thread_ts=thread_ts,
+                        )
+                        if recovered_decision:
+                            recovered_is_approved, recovered_manager_id, recovered_approved_line_numbers = recovered_decision
+                            is_approved = recovered_is_approved
+                            is_rejected = not recovered_is_approved
+                            approved_line_numbers = recovered_approved_line_numbers
+                            manager_id = recovered_manager_id
 
-                                client.chat_postMessage(
-                                    channel=settings.manager_channel_id,
-                                    thread_ts=thread_ts,
-                                    text=(
-                                        f"✅ Approved and logged. Notified <@{requester_id}>."
-                                        f"{budget_change_text}"
-                                    ),
-                                )
+            if (is_approved or is_rejected) and not approval_data:
+                request_id = _resolve_request_id_for_manager_thread(client, channel_id, thread_ts)
+                if request_id:
+                    try:
+                        log_entries = sheets.get_purchase_log_entries(request_id=request_id)
+                    except Exception:
+                        logger.exception("Failed loading Purchases_Log entry for %s", request_id)
+                        log_entries = []
 
-                            else:  # is_rejected
-                                # Log rejection to Purchases_Log (without reason yet, will be added later)
-                                # For rejections, before = after (no budget change)
-                                reviewed_at_utc = datetime.now(timezone.utc).isoformat()
-                                
-                                # Read before values from log to copy to after
-                                subteam_before_for_copy = available_budget_before
-                                try:
-                                    bank_before_for_copy = sheets.get_bank_available()
-                                except Exception:
-                                    bank_before_for_copy = None
-                                
-                                sheets.update_purchase_log_status(
-                                    request_id=request_id,
-                                    status="rejected",
-                                    reviewed_at_utc=reviewed_at_utc,
-                                    manager_id=manager_id,
-                                    subteam_available_after=subteam_before_for_copy,
-                                    bank_available_after=bank_before_for_copy,
-                                )
-
-                                PENDING_REJECTION_REASONS[thread_ts] = {
-                                    "created_at": time.time(),
-                                    "request_id": request_id,
-                                    "requester_id": requester_id,
-                                    "manager_id": manager_id,
-                                    "item_name": item_name,
-                                    "requested_amount": amount,
-                                    "original_channel_id": original_channel_id,
-                                    "original_message_ts": original_message_ts,
+                    if log_entries and all(entry.status == "under_review" for entry in log_entries):
+                        first_entry = log_entries[0]
+                        approval_data = {
+                            "user_id": first_entry.requester_id,
+                            "request_id": first_entry.request_id,
+                            "items": [
+                                {
+                                    "line_number": entry.bundle_line_number,
+                                    "subteam_tab": entry.subteam,
+                                    "reference_id": entry.reference_id,
+                                    "item_name": entry.item_name,
+                                    "requested_amount": entry.amount_usd,
+                                    "is_unaccounted": entry.is_unaccounted,
+                                    "reason": entry.purchase_reason,
                                 }
-                                
-                                # Ask manager to provide reason in next message
-                                client.chat_postMessage(
-                                    channel=settings.manager_channel_id,
-                                    thread_ts=thread_ts,
-                                    text=(
-                                        f"<@{manager_id}> please reply with the rejection reason.\n"
-                                        f"I'll forward it to <@{requester_id}> via DM.\n\n"
-                                        f"*Request ID:* {request_id}"
-                                    ),
-                                )
-                        except Exception:
-                            logger.exception("Error processing approval/rejection from manager thread")
-                    
-                    EXECUTOR.submit(run_approval)
-                    return
+                                for entry in log_entries
+                            ],
+                            "original_channel_id": None,
+                            "original_message_ts": None,
+                        }
+                        PENDING_APPROVALS[thread_ts] = approval_data
+                    elif log_entries and all(entry.status in {"approved", "rejected"} for entry in log_entries):
+                        client.chat_postMessage(
+                            channel=settings.manager_channel_id,
+                            thread_ts=thread_ts,
+                            text=(
+                                f"Request *{request_id}* has already been reviewed "
+                                f"(status: *{log_entries[0].status}*)."
+                            ),
+                        )
+                        return
+
+            if approval_data and (is_approved or is_rejected):
+                if is_approved and approved_line_numbers is not None:
+                    valid_line_numbers = {int(item["line_number"]) for item in approval_data.get("items") or []}
+                    invalid_line_numbers = sorted(
+                        line_number
+                        for line_number in approved_line_numbers
+                        if line_number not in valid_line_numbers
+                    )
+                    if invalid_line_numbers:
+                        client.chat_postMessage(
+                            channel=settings.manager_channel_id,
+                            thread_ts=thread_ts,
+                            text=(
+                                "Invalid item number(s) in approval message: "
+                                f"{', '.join(str(n) for n in invalid_line_numbers)}.\n"
+                                "Use item numbers shown in the request (example: `✅ 1 2 3`)."
+                            ),
+                        )
+                        return
+
+                # Remove from pending to prevent duplicate processing
+                PENDING_APPROVALS.pop(thread_ts, None)
+
+                _submit_manager_decision_processing(
+                    approval_data=approval_data,
+                    is_approved=is_approved,
+                    approved_line_numbers=approved_line_numbers,
+                    manager_id=manager_id,
+                    thread_ts=thread_ts,
+                )
+                return
         
         # Handle manager rejection-reason capture flow
         _prune_pending_rejection_reasons()
         
         pending_rejection = PENDING_REJECTION_REASONS.get(thread_ts)
+        if not pending_rejection and channel_id == settings.manager_channel_id and thread_ts:
+            # Restart recovery: if rejected-without-reason exists in Purchases_Log,
+            # rebuild pending rejection context from sheet data.
+            candidate_text = (event.get("text") or "").strip()
+            decision_is_approved, decision_is_rejected, _ = _parse_manager_decision_text(candidate_text)
+            if candidate_text and not (decision_is_approved or decision_is_rejected):
+                request_id = _resolve_request_id_for_manager_thread(client, channel_id, thread_ts)
+                if request_id:
+                    try:
+                        log_entries = sheets.get_purchase_log_entries(request_id=request_id)
+                    except Exception:
+                        logger.exception("Failed loading Purchases_Log entry for rejection recovery: %s", request_id)
+                        log_entries = []
+
+                    manager_id = event.get("user")
+                    first_entry = log_entries[0] if log_entries else None
+                    if (
+                        first_entry
+                        and all(entry.status == "rejected" for entry in log_entries)
+                        and all(not entry.rejection_reason for entry in log_entries)
+                        and first_entry.manager_id
+                        and manager_id == first_entry.manager_id
+                    ):
+                        pending_rejection = {
+                            "created_at": time.time(),
+                            "request_id": first_entry.request_id,
+                            "requester_id": first_entry.requester_id,
+                            "manager_id": first_entry.manager_id,
+                            "items": [
+                                {
+                                    "line_number": entry.bundle_line_number,
+                                    "reference_id": entry.reference_id,
+                                    "item_name": entry.item_name,
+                                    "requested_amount": entry.amount_usd,
+                                }
+                                for entry in log_entries
+                            ],
+                            "total_amount": sum(entry.amount_usd for entry in log_entries),
+                            "original_channel_id": None,
+                            "original_message_ts": None,
+                        }
+                        PENDING_REJECTION_REASONS[thread_ts] = pending_rejection
+
         if not pending_rejection:
             return
 
@@ -944,13 +1993,12 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
             try:
                 requester_id = str(pending_rejection["requester_id"])
                 manager_id = str(pending_rejection["manager_id"])
-                item_name = str(pending_rejection["item_name"])
-                amount = float(pending_rejection["requested_amount"])
                 request_id = str(pending_rejection["request_id"])
                 original_channel_id = pending_rejection.get("original_channel_id")
                 original_message_ts = pending_rejection.get("original_message_ts")
+                items = pending_rejection.get("items") or []
+                total_amount = float(pending_rejection.get("total_amount") or 0.0)
 
-                # React with X on original purchase request message now that reason is provided
                 if original_channel_id and original_message_ts:
                     try:
                         client.reactions_add(
@@ -961,18 +2009,21 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                     except Exception as e:
                         logger.warning("Failed to add X reaction: %s", e)
 
+                item_lines = "\n".join(
+                    f"Item {item['line_number']}: {item['reference_id']} | {item['item_name']} | {format_usd(float(item['requested_amount']))}"
+                    for item in items
+                )
                 client.chat_postMessage(
                     channel=requester_id,
                     text=(
                         f"❌ Your purchase request was *rejected* by <@{manager_id}>.\n\n"
                         f"*Request ID:* {request_id}\n"
-                        f"*Item:* {item_name}\n"
-                        f"*Amount:* {format_usd(amount)}\n"
+                        f"*Total Amount:* {format_usd(total_amount)}\n"
+                        f"*Items:*\n{item_lines}\n"
                         f"*Reason:* {reason_text}"
                     ),
                 )
 
-                # Update log with rejection reason
                 sheets.update_purchase_log_rejection_reason(
                     request_id=request_id,
                     rejection_reason=reason_text,
@@ -1000,6 +2051,34 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
     def slack_commands():
         # Bolt performs Slack signature verification via signing_secret.
         return handler.handle(request)
+
+    scanner_enabled_raw = os.getenv("ENABLE_MANAGER_DECISION_SCANNER", "false").strip().lower()
+    scanner_enabled = scanner_enabled_raw not in {"0", "false", "no", "off"}
+    scan_interval = MANAGER_DECISION_SCAN_INTERVAL_SECONDS
+    scan_interval_raw = os.getenv("MANAGER_DECISION_SCAN_INTERVAL_SECONDS", "").strip()
+    if scan_interval_raw:
+        try:
+            scan_interval = max(5, int(scan_interval_raw))
+        except ValueError:
+            logger.warning(
+                "Invalid MANAGER_DECISION_SCAN_INTERVAL_SECONDS=%r, using default %s",
+                scan_interval_raw,
+                MANAGER_DECISION_SCAN_INTERVAL_SECONDS,
+            )
+
+    if scanner_enabled:
+        scanner_thread = threading.Thread(
+            target=_scan_manager_channel_for_missed_decisions,
+            args=(scan_interval,),
+            name="manager-decision-scanner",
+            daemon=True,
+        )
+        scanner_thread.start()
+        logger.info(
+            "Started manager decision scanner (interval=%ss, history_limit=%s)",
+            scan_interval,
+            MANAGER_DECISION_SCAN_HISTORY_LIMIT,
+        )
 
     return server, bolt_app
 

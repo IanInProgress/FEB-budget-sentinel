@@ -1,4 +1,4 @@
-from parser import parse_purchase_text
+from parser import parse_bulk_purchase_text, parse_purchase_text
 from budget_checker import Status
 
 
@@ -99,4 +99,23 @@ def test_parse_regular_item_is_not_unaccounted():
     assert r.ok is True
     assert r.is_unaccounted is False
     assert r.provided_item_name is None
+
+
+def test_parse_bulk_order_valid_multiple_lines():
+    r = parse_bulk_purchase_text(
+        'EECS-001, 20.00, Connectors\nEECS-010, 15.50, Ferrules\nEECS-000 New Bin, 12.00, Storage'
+    )
+    assert r.ok is True
+    assert len(r.items) == 3
+    assert r.items[0].line_number == 1
+    assert r.items[1].reference_id == 'EECS-010'
+    assert r.items[2].is_unaccounted is True
+    assert r.items[2].provided_item_name == 'New Bin'
+
+
+
+def test_parse_bulk_order_reports_line_error():
+    r = parse_bulk_purchase_text('EECS-001, 20.00, Connectors\nBADINPUT')
+    assert r.ok is False
+    assert 'Line 2' in (r.error_message or '')
 

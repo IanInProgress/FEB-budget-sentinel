@@ -20,7 +20,7 @@ class Settings:
     slack_commands_path: str
     port: int
 
-    purchase_command_keyword: str
+    item_budget_reject_threshold_percent_of_estimate: float
 
 
 class ConfigError(RuntimeError):
@@ -42,6 +42,17 @@ def _parse_int(name: str, default: int) -> int:
         value = int(raw)
     except ValueError as e:
         raise ConfigError(f"Invalid integer for {name}: {raw}") from e
+    return value
+
+
+def _parse_float(name: str, default: float) -> float:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = float(raw)
+    except ValueError as e:
+        raise ConfigError(f"Invalid number for {name}: {raw}") from e
     return value
 
 
@@ -73,7 +84,12 @@ def load_settings(*, load_env: bool = True) -> Settings:
     slack_commands_path = os.getenv("SLACK_COMMANDS_PATH", "/slack/commands").strip() or "/slack/commands"
     port = _parse_int("PORT", 3000)
 
-    purchase_command_keyword = os.getenv("PURCHASE_COMMAND_KEYWORD", "command_purchase:").strip() or "command_purchase:"
+    item_budget_reject_threshold_percent_of_estimate = _parse_float(
+        "ITEM_BUDGET_REJECT_THRESHOLD_PERCENT",
+        125.0,
+    )
+    if item_budget_reject_threshold_percent_of_estimate < 0:
+        raise ConfigError("ITEM_BUDGET_REJECT_THRESHOLD_PERCENT must be >= 0")
 
     return Settings(
         slack_bot_token=slack_bot_token,
@@ -85,5 +101,5 @@ def load_settings(*, load_env: bool = True) -> Settings:
         log_level=log_level,
         slack_commands_path=slack_commands_path,
         port=port,
-        purchase_command_keyword=purchase_command_keyword,
+        item_budget_reject_threshold_percent_of_estimate=item_budget_reject_threshold_percent_of_estimate,
     )

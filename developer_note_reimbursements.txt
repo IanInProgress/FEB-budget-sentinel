@@ -1,0 +1,7 @@
+Developer Note
+
+Plan to use /reimburse in the future.
+
+Make /reimburse display a modal just like /purchase.
+The modal item boxes should match what the current Google Form for reimbursement details collects.
+Then, using those modal inputs, the bot should append reimbursement information to the same master spreadsheet destination that the Google Form currently writes to.
