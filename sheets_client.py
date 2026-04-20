@@ -1133,6 +1133,101 @@ class SheetsClient:
             actual_after=float(new_actual),
         )
 
+    def append_reimbursement_form_row(
+        self,
+        *,
+        submitted_at: str,
+        submitter_email: str,
+        phone: str,
+        subteam: str,
+        purchase_date: str,
+        reason: str,
+        vendor: str,
+        requested_amount: str,
+        description: str = "",
+        notes: str = "",
+        acknowledged: bool,
+        missing_explanation: str = "",
+    ) -> bool:
+        """
+        Append one purchase row to the Reimbursements tab (Google Form responses sheet).
+        One row is written per purchase; submitter info is repeated on each row.
+        The sheet has 67 columns matching the Google Form layout.
+        """
+        try:
+            ws = self._sh.worksheet("Reimbursements")
+        except WorksheetNotFound as e:
+            raise SheetsClientError("Reimbursements tab not found") from e
+        except Exception as e:
+            raise SheetsClientError("Failed to open Reimbursements tab") from e
+
+        combined_reason = (
+            f"{description} | {reason}".strip(" |") if description else reason
+        )
+        ack_text = (
+            "Acknowledged via Slack - purchase proof contains payee name, last 4 digits of card, and purchase amount"
+            if acknowledged
+            else ""
+        )
+
+        # 67 columns matching the Google Form layout:
+        # Cols 1-17: submitter metadata, cols 18-24: purchase 1 data,
+        # col 25: "another?", cols 26-64: empty purchase slots 2-6,
+        # cols 65-67: acknowledgement / missing explanation / duplicate phone.
+        row = (
+            [
+                submitted_at,        # Col 1:  Timestamp
+                requested_amount,    # Col 2:  Total Amount
+                "",                  # Col 3:  PR Number
+                "",                  # Col 4:  Stage
+                "",                  # Col 5:  Comments
+                "",                  # Col 6:  Finance Agent
+                subteam,             # Col 7:  Subteam
+                "",                  # Col 8:  First Name
+                "",                  # Col 9:  Last Name
+                "",                  # Col 10: Street
+                "",                  # Col 11: Street 2
+                "",                  # Col 12: City
+                "",                  # Col 13: State/Province
+                "",                  # Col 14: ZIP/Postal Code
+                "",                  # Col 15: UID
+                submitter_email,     # Col 16: Email Address
+                phone,               # Col 17: Phone Number
+                purchase_date,       # Col 18: Date of transaction (P1)
+                combined_reason,     # Col 19: Reason for purchasing (P1)
+                vendor,              # Col 20: Name of vendor (P1)
+                requested_amount,    # Col 21: Requested amount (P1)
+                "",                  # Col 22: Receipt #1 (not collected via Slack)
+                "",                  # Col 23: Bank statement #1 (not collected)
+                notes,               # Col 24: Notes/comments (P1)
+                "No",                # Col 25: Do you have another reimbursement?
+            ]
+            + [""] * 39  # Cols 26-64: purchase slots 2-6 (empty)
+            + [
+                ack_text,            # Col 65: Please acknowledge...
+                missing_explanation, # Col 66: If missing, explain why
+                "",                  # Col 67: Phone Number (duplicate column)
+            ]
+        )
+
+        try:
+            ws.append_row(row)
+            logger.info(
+                "Appended Reimbursements row for %s: %s on %s ($%s)",
+                submitter_email,
+                vendor,
+                purchase_date,
+                requested_amount,
+            )
+            return True
+        except Exception as e:
+            logger.error(
+                "Failed to append Reimbursements row for %s: %s",
+                submitter_email,
+                e,
+            )
+            return False
+
     def append_budget_line(
         self,
         *,

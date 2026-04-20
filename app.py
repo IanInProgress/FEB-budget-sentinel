@@ -29,6 +29,23 @@ from utils import coerce_money, format_usd
 
 
 EXECUTOR = ThreadPoolExecutor(max_workers=4)
+
+REIMBURSEMENT_SUBTEAMS = [
+    "Accumulator MechE",
+    "Aero",
+    "Autonomous",
+    "B&O",
+    "Chassis",
+    "Composites",
+    "Dynamics",
+    "EECS",
+    "Ergo/Brakes",
+    "General & Administrative",
+    "Manufacturing",
+    "Powertrain",
+    "RFS",
+    "Transport",
+]
 PENDING_APPROVALS: dict[str, dict[str, Any]] = {}  # message_ts -> request metadata
 PENDING_REJECTION_REASONS: dict[str, dict[str, Any]] = {}  # manager message_ts -> rejection metadata
 PENDING_CONFIRMATIONS: set[tuple[str, str, str]] = set()  # (user_id, channel_id, original_message_ts) -> in-flight
@@ -2040,6 +2057,499 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                 PENDING_REJECTION_REASONS.pop(thread_ts, None)
 
         EXECUTOR.submit(run)
+
+    # -------------------------------------------------------------------------
+    # /reimbursement command
+    # -------------------------------------------------------------------------
+
+    def _build_purchase_slot_blocks(n: int) -> list[dict[str, Any]]:
+        """Return Block Kit blocks for purchase slot N (1-indexed)."""
+        blocks: list[dict[str, Any]] = []
+        if n > 1:
+            blocks.append({"type": "divider", "block_id": f"p{n}_divider_block"})
+        blocks.append({
+            "type": "header",
+            "block_id": f"p{n}_header_block",
+            "text": {"type": "plain_text", "text": f"Purchase {n}"},
+        })
+        blocks.append({
+            "type": "input",
+            "block_id": f"p{n}_description_block",
+            "optional": True,
+            "label": {"type": "plain_text", "text": "Description"},
+            "element": {
+                "type": "plain_text_input",
+                "action_id": f"p{n}_description_input",
+                "placeholder": {"type": "plain_text", "text": "Brief item description (optional)"},
+            },
+        })
+        blocks.append({
+            "type": "input",
+            "block_id": f"p{n}_date_block",
+            "label": {"type": "plain_text", "text": "Date of Transaction"},
+            "element": {
+                "type": "datepicker",
+                "action_id": f"p{n}_date_input",
+                "placeholder": {"type": "plain_text", "text": "Select date"},
+            },
+        })
+        blocks.append({
+            "type": "input",
+            "block_id": f"p{n}_reason_block",
+            "label": {"type": "plain_text", "text": "Reason for Purchasing"},
+            "element": {
+                "type": "plain_text_input",
+                "action_id": f"p{n}_reason_input",
+                "placeholder": {"type": "plain_text", "text": "Why did you make this purchase?"},
+            },
+        })
+        blocks.append({
+            "type": "input",
+            "block_id": f"p{n}_vendor_block",
+            "label": {"type": "plain_text", "text": "Vendor Name"},
+            "element": {
+                "type": "plain_text_input",
+                "action_id": f"p{n}_vendor_input",
+                "placeholder": {"type": "plain_text", "text": "e.g. Amazon, McMaster-Carr"},
+            },
+        })
+        blocks.append({
+            "type": "input",
+            "block_id": f"p{n}_amount_block",
+            "label": {"type": "plain_text", "text": "Requested Amount ($)"},
+            "element": {
+                "type": "plain_text_input",
+                "action_id": f"p{n}_amount_input",
+                "placeholder": {"type": "plain_text", "text": "e.g. 42.50"},
+            },
+            "hint": {"type": "plain_text", "text": "Enter the dollar amount without the $ sign"},
+        })
+        blocks.append({
+            "type": "input",
+            "block_id": f"p{n}_notes_block",
+            "optional": True,
+            "label": {"type": "plain_text", "text": "Notes/Comments"},
+            "element": {
+                "type": "plain_text_input",
+                "action_id": f"p{n}_notes_input",
+                "multiline": True,
+                "placeholder": {"type": "plain_text", "text": "Any additional notes (optional)"},
+            },
+        })
+        return blocks
+
+    def _build_reimbursement_modal_blocks(purchase_count: int) -> list[dict[str, Any]]:
+        blocks: list[dict[str, Any]] = [
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": (
+                        "*Reimbursement Request*\n"
+                        "Fill out your info and each purchase. Up to 6 purchases per submission.\n"
+                        "_Receipts and bank statements are submitted separately — skip those here._"
+                    ),
+                },
+            },
+            {"type": "divider"},
+            {
+                "type": "input",
+                "block_id": "email_block",
+                "label": {"type": "plain_text", "text": "Email Address"},
+                "element": {
+                    "type": "plain_text_input",
+                    "action_id": "email_input",
+                    "placeholder": {"type": "plain_text", "text": "yourname@berkeley.edu"},
+                },
+            },
+            {
+                "type": "input",
+                "block_id": "phone_block",
+                "label": {"type": "plain_text", "text": "Phone Number"},
+                "element": {
+                    "type": "plain_text_input",
+                    "action_id": "phone_input",
+                    "placeholder": {"type": "plain_text", "text": "e.g. 510-555-1234"},
+                },
+            },
+            {
+                "type": "input",
+                "block_id": "subteam_block",
+                "label": {"type": "plain_text", "text": "Subteam"},
+                "element": {
+                    "type": "static_select",
+                    "action_id": "subteam_input",
+                    "placeholder": {"type": "plain_text", "text": "Select your subteam"},
+                    "options": [
+                        {"text": {"type": "plain_text", "text": s}, "value": s}
+                        for s in REIMBURSEMENT_SUBTEAMS
+                    ],
+                },
+            },
+            {"type": "divider"},
+        ]
+
+        for n in range(1, purchase_count + 1):
+            blocks.extend(_build_purchase_slot_blocks(n))
+
+        if purchase_count < 6:
+            blocks.append({
+                "type": "actions",
+                "block_id": "add_purchase_actions_block",
+                "elements": [
+                    {
+                        "type": "button",
+                        "text": {
+                            "type": "plain_text",
+                            "text": f"+ Add Another Purchase ({purchase_count}/6 used)",
+                        },
+                        "action_id": "add_purchase_slot",
+                        "value": str(purchase_count),
+                    }
+                ],
+            })
+        else:
+            blocks.append({
+                "type": "context",
+                "block_id": "max_purchases_block",
+                "elements": [
+                    {"type": "mrkdwn", "text": "✅ Maximum of 6 purchases reached."},
+                ],
+            })
+
+        blocks.extend([
+            {"type": "divider"},
+            {
+                "type": "input",
+                "block_id": "ack_block",
+                "optional": True,
+                "label": {"type": "plain_text", "text": "Acknowledgement"},
+                "element": {
+                    "type": "checkboxes",
+                    "action_id": "ack_input",
+                    "options": [
+                        {
+                            "text": {
+                                "type": "plain_text",
+                                "text": (
+                                    "I confirm all submitted purchase proof contains: "
+                                    "payee name, last 4 digits of card, and purchase amount."
+                                ),
+                            },
+                            "value": "acknowledged",
+                        }
+                    ],
+                },
+            },
+            {
+                "type": "input",
+                "block_id": "missing_explanation_block",
+                "optional": True,
+                "label": {"type": "plain_text", "text": "If proof is incomplete, explain why"},
+                "element": {
+                    "type": "plain_text_input",
+                    "action_id": "missing_explanation_input",
+                    "multiline": True,
+                    "placeholder": {
+                        "type": "plain_text",
+                        "text": "Explain what is missing and why",
+                    },
+                },
+                "hint": {
+                    "type": "plain_text",
+                    "text": "Required if you did not check the acknowledgement above.",
+                },
+            },
+        ])
+
+        return blocks
+
+    def _open_reimbursement_modal(client, *, trigger_id: str) -> None:
+        client.views_open(
+            trigger_id=trigger_id,
+            view={
+                "type": "modal",
+                "callback_id": "reimbursement_modal",
+                "private_metadata": json.dumps({"purchase_count": 1}),
+                "title": {"type": "plain_text", "text": "Reimbursement Request"},
+                "submit": {"type": "plain_text", "text": "Submit"},
+                "close": {"type": "plain_text", "text": "Cancel"},
+                "blocks": _build_reimbursement_modal_blocks(1),
+            },
+        )
+
+    @bolt_app.command("/reimbursement")
+    def handle_reimbursement_command(ack, body, client):
+        ack()
+        trigger_id = body.get("trigger_id")
+        if not trigger_id:
+            return
+        try:
+            _open_reimbursement_modal(client, trigger_id=trigger_id)
+        except Exception:
+            logger.exception("Failed to open /reimbursement modal")
+
+    @bolt_app.action("add_purchase_slot")
+    def handle_add_purchase_slot(ack, body, client):
+        ack()
+
+        view = body.get("view") or {}
+        view_id = view.get("id")
+        if not view_id:
+            return
+
+        private_metadata_raw = view.get("private_metadata") or "{}"
+        try:
+            private_metadata = json.loads(private_metadata_raw)
+        except Exception:
+            private_metadata = {}
+
+        current_count = int(private_metadata.get("purchase_count", 1))
+        if current_count >= 6:
+            return
+
+        new_count = current_count + 1
+        private_metadata["purchase_count"] = new_count
+
+        try:
+            client.views_update(
+                view_id=view_id,
+                view={
+                    "type": "modal",
+                    "callback_id": "reimbursement_modal",
+                    "private_metadata": json.dumps(private_metadata),
+                    "title": {"type": "plain_text", "text": "Reimbursement Request"},
+                    "submit": {"type": "plain_text", "text": "Submit"},
+                    "close": {"type": "plain_text", "text": "Cancel"},
+                    "blocks": _build_reimbursement_modal_blocks(new_count),
+                },
+            )
+        except Exception:
+            logger.exception("Failed to update reimbursement modal to %d purchases", new_count)
+
+    @bolt_app.view("reimbursement_modal")
+    def handle_reimbursement_modal(ack, body, client):
+        view = body.get("view") or {}
+        state_values = ((view.get("state") or {}).get("values") or {})
+
+        private_metadata_raw = view.get("private_metadata") or "{}"
+        try:
+            private_metadata = json.loads(private_metadata_raw)
+        except Exception:
+            private_metadata = {}
+
+        purchase_count = int(private_metadata.get("purchase_count", 1))
+
+        # --- submitter fields ---
+        email = (
+            ((state_values.get("email_block") or {}).get("email_input") or {}).get("value") or ""
+        ).strip()
+        phone = (
+            ((state_values.get("phone_block") or {}).get("phone_input") or {}).get("value") or ""
+        ).strip()
+        subteam_state = (state_values.get("subteam_block") or {}).get("subteam_input") or {}
+        subteam = (subteam_state.get("selected_option") or {}).get("value", "").strip()
+
+        # --- acknowledgement ---
+        ack_selected = (
+            ((state_values.get("ack_block") or {}).get("ack_input") or {}).get("selected_options") or []
+        )
+        acknowledged = any(opt.get("value") == "acknowledged" for opt in ack_selected)
+        missing_explanation = (
+            (
+                (state_values.get("missing_explanation_block") or {})
+                .get("missing_explanation_input") or {}
+            ).get("value") or ""
+        ).strip()
+
+        # --- collect raw purchase data ---
+        raw_purchases = []
+        for n in range(1, purchase_count + 1):
+            raw_purchases.append({
+                "n": n,
+                "description": (
+                    (
+                        (state_values.get(f"p{n}_description_block") or {})
+                        .get(f"p{n}_description_input") or {}
+                    ).get("value") or ""
+                ).strip(),
+                "date": (
+                    (
+                        (state_values.get(f"p{n}_date_block") or {})
+                        .get(f"p{n}_date_input") or {}
+                    ).get("selected_date") or ""
+                ).strip(),
+                "reason": (
+                    (
+                        (state_values.get(f"p{n}_reason_block") or {})
+                        .get(f"p{n}_reason_input") or {}
+                    ).get("value") or ""
+                ).strip(),
+                "vendor": (
+                    (
+                        (state_values.get(f"p{n}_vendor_block") or {})
+                        .get(f"p{n}_vendor_input") or {}
+                    ).get("value") or ""
+                ).strip(),
+                "amount_raw": (
+                    (
+                        (state_values.get(f"p{n}_amount_block") or {})
+                        .get(f"p{n}_amount_input") or {}
+                    ).get("value") or ""
+                ).strip(),
+                "notes": (
+                    (
+                        (state_values.get(f"p{n}_notes_block") or {})
+                        .get(f"p{n}_notes_input") or {}
+                    ).get("value") or ""
+                ).strip(),
+            })
+
+        # --- validate ---
+        errors: dict[str, str] = {}
+
+        if not email:
+            errors["email_block"] = "Email address is required."
+        elif "@" not in email:
+            errors["email_block"] = "Please enter a valid email address."
+
+        if not phone:
+            errors["phone_block"] = "Phone number is required."
+
+        if not subteam:
+            errors["subteam_block"] = "Please select your subteam."
+
+        if not acknowledged and not missing_explanation:
+            errors["missing_explanation_block"] = (
+                "Please check the acknowledgement above, or explain what proof is missing."
+            )
+
+        validated_purchases = []
+        for p in raw_purchases:
+            n = p["n"]
+            has_purchase_error = False
+
+            if not p["date"]:
+                errors[f"p{n}_date_block"] = "Transaction date is required."
+                has_purchase_error = True
+
+            if not p["reason"]:
+                errors[f"p{n}_reason_block"] = "Reason for purchasing is required."
+                has_purchase_error = True
+
+            if not p["vendor"]:
+                errors[f"p{n}_vendor_block"] = "Vendor name is required."
+                has_purchase_error = True
+
+            amount: float | None = None
+            if not p["amount_raw"]:
+                errors[f"p{n}_amount_block"] = "Amount is required."
+                has_purchase_error = True
+            else:
+                try:
+                    amount = coerce_money(p["amount_raw"])
+                    if amount is None or amount <= 0:
+                        errors[f"p{n}_amount_block"] = "Amount must be greater than $0."
+                        has_purchase_error = True
+                        amount = None
+                except Exception:
+                    errors[f"p{n}_amount_block"] = "Enter a valid dollar amount (e.g. 42.50)."
+                    has_purchase_error = True
+
+            if not has_purchase_error and amount is not None:
+                validated_purchases.append({
+                    "description": p["description"],
+                    "date": p["date"],
+                    "reason": p["reason"],
+                    "vendor": p["vendor"],
+                    "amount": p["amount_raw"],
+                    "notes": p["notes"],
+                })
+
+        if errors:
+            ack(response_action="errors", errors=errors)
+            return
+
+        ack()
+
+        user_id = (body.get("user") or {}).get("id", "unknown")
+        submitted_at = datetime.now(timezone.utc).strftime("%m/%d/%Y %H:%M:%S")
+
+        def run_reimbursement_submission() -> None:
+            success_count = 0
+            try:
+                for purchase in validated_purchases:
+                    ok = sheets.append_reimbursement_form_row(
+                        submitted_at=submitted_at,
+                        submitter_email=email,
+                        phone=phone,
+                        subteam=subteam,
+                        purchase_date=purchase["date"],
+                        reason=purchase["reason"],
+                        vendor=purchase["vendor"],
+                        requested_amount=purchase["amount"],
+                        description=purchase["description"],
+                        notes=purchase["notes"],
+                        acknowledged=acknowledged,
+                        missing_explanation=missing_explanation,
+                    )
+                    if ok:
+                        success_count += 1
+
+                logger.info(
+                    "Reimbursement submitted: email=%s purchases=%d/%d",
+                    email,
+                    success_count,
+                    len(validated_purchases),
+                )
+
+                if success_count == len(validated_purchases):
+                    total = sum(
+                        float(coerce_money(p["amount"]) or 0.0)
+                        for p in validated_purchases
+                    )
+                    purchase_lines = "\n".join(
+                        f"• {p['vendor']} — {format_usd(float(coerce_money(p['amount']) or 0.0))} ({p['date']})"
+                        for p in validated_purchases
+                    )
+                    bolt_app.client.chat_postMessage(
+                        channel=user_id,
+                        text=(
+                            f"✅ *Reimbursement request submitted!*\n\n"
+                            f"*Email:* {email}\n"
+                            f"*Subteam:* {subteam}\n"
+                            f"*Total:* {format_usd(total)}\n\n"
+                            f"*Purchases ({len(validated_purchases)}):*\n{purchase_lines}\n\n"
+                            "_Upload your receipts and bank statements per the normal process._"
+                        ),
+                    )
+                else:
+                    bolt_app.client.chat_postMessage(
+                        channel=user_id,
+                        text=(
+                            f"⚠️ Reimbursement partially submitted "
+                            f"({success_count}/{len(validated_purchases)} purchases written to sheet). "
+                            "Please contact the finance team."
+                        ),
+                    )
+            except Exception:
+                logger.exception(
+                    "Error processing reimbursement submission user=%s email=%s",
+                    user_id,
+                    email,
+                )
+                try:
+                    bolt_app.client.chat_postMessage(
+                        channel=user_id,
+                        text=(
+                            "❌ An error occurred while submitting your reimbursement. "
+                            "Please try again or contact the finance team."
+                        ),
+                    )
+                except Exception:
+                    pass
+
+        EXECUTOR.submit(run_reimbursement_submission)
 
     server = Flask(__name__)
 
