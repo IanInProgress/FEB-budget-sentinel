@@ -114,11 +114,11 @@ def build_budget_report(
     if is_unaccounted:
         subteam_available = _subteam_available_budget()
         if subteam_available is None:
-            reason = "Unaccounted item in planned budget; subteam available budget is unavailable."
+            reason = "Unaccounted item in planned budget; available budget is unavailable."
         elif requested_amount <= subteam_available + 1e-9:
-            reason = "Unaccounted item in planned budget, but within subteam available budget."
+            reason = "Unaccounted item in planned budget, but within available budget."
         else:
-            reason = "Unaccounted item in planned budget and exceeds subteam available budget."
+            reason = "Unaccounted item in planned budget and exceeds available budget."
 
         return BudgetReport(
             status=Status.UNACCOUNTED_ITEM,
@@ -171,11 +171,11 @@ def build_budget_report(
     
     if requested_amount <= remaining + 1e-9:
         if match.available_budget is None:
-            within_reason = "Within item budget; subteam available budget is unavailable."
+            within_reason = "Within item budget; available budget is unavailable."
         elif requested_amount <= match.available_budget + 1e-9:
-            within_reason = "Within both item budget and subteam available budget."
+            within_reason = "Within both item budget and available budget."
         else:
-            within_reason = "Within item budget, but exceeds subteam available budget."
+            within_reason = "Within item budget, but exceeds available budget."
 
         return BudgetReport(
             status=Status.WITHIN_BUDGET,
@@ -191,11 +191,11 @@ def build_budget_report(
         )
     
     if match.available_budget is None:
-        over_reason = "Exceeds item budget; subteam available budget is unavailable."
+        over_reason = "Exceeds item budget; available budget is unavailable."
     elif requested_amount <= match.available_budget + 1e-9:
-        over_reason = "Exceeds item budget, but within subteam available budget."
+        over_reason = "Exceeds item budget, but within available budget."
     else:
-        over_reason = "Exceeds both item budget and subteam available budget."
+        over_reason = "Exceeds both item budget and available budget."
 
     return BudgetReport(
         status=Status.OVER_BUDGET,
