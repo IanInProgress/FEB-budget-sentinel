@@ -1,0 +1,11 @@
+[build]
+builder = "RAILPACK"
+
+[deploy]
+# One worker is deliberate: the app starts a background Slack decision scanner,
+# which must have exactly one process polling the manager channel.
+startCommand = "gunicorn --workers 1 --threads 4 --bind 0.0.0.0:$PORT app:server"
+healthcheckPath = "/healthz"
+healthcheckTimeout = 180
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 10

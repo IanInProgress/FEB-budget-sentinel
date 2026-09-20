@@ -82,6 +82,40 @@ A Slack-integrated budget management system for Formula Electric Berkeley. Membe
    - Share your Google Sheet with the service account email (as Editor)
    - **Important**: Grant the service account edit access to all columns that the bot needs to update
 
+## Deploying to Railway
+
+The repository includes `railway.toml`, which builds the Python application with
+Railpack and runs it with one Gunicorn worker. Do not increase the worker count:
+the application has a background manager-decision scanner and multiple workers
+would run duplicate scans.
+
+1. Push this repository to GitHub, then in Railway create a new project and
+   choose **Deploy from GitHub repo**.
+2. In the new service's **Variables** tab, add the required values below. Do
+   not set `GOOGLE_SERVICE_ACCOUNT_FILE` on Railway.
+
+   ```text
+   SLACK_BOT_TOKEN
+   SLACK_SIGNING_SECRET
+   MANAGER_CHANNEL_ID
+   GOOGLE_SHEET_ID
+   GOOGLE_SERVICE_ACCOUNT_JSON
+   ```
+
+   Set `GOOGLE_SERVICE_ACCOUNT_JSON` to the complete contents of the Google
+   service-account JSON key file. Railway stores it as a secret; do not commit
+   that key file to GitHub.
+3. Deploy, then open **Settings → Networking** and generate a public domain.
+   Confirm `<your-domain>/healthz` returns `{"status":"ok"}`.
+4. In your Slack app configuration, set this same URL everywhere Slack sends a
+   request: each slash command's **Request URL**, **Interactivity & Shortcuts**,
+   and **Event Subscriptions**:
+   `https://<your-domain>/slack/commands`. Reinstall the Slack app to the
+   workspace if Slack asks you to do so.
+
+`PORT` is supplied by Railway automatically. Optional variables such as
+`LOG_LEVEL` and `ENABLE_MANAGER_DECISION_SCANNER` can be left at their defaults.
+
 ## Configuration
 
 ### Google Sheets Format

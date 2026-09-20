@@ -2043,6 +2043,11 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
 
     server = Flask(__name__)
 
+    @server.get("/healthz")
+    def healthcheck():
+        """Unauthenticated readiness endpoint for the hosting platform."""
+        return {"status": "ok"}, 200
+
     @server.post(settings.slack_commands_path)
     def slack_commands():
         # Bolt performs Slack signature verification via signing_secret.
