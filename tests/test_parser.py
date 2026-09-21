@@ -68,6 +68,9 @@ def test_parse_valid_all_subteams():
         ("AERO-001", "Aero"),
         ("AUTO-001", "Auto"),
         ("MANU-001", "Manufacturing"),
+        ("BNO-001", "B&O"),
+        ("TRAN-001", "RFS + Transport"),
+        ("SIMS-001", "Simulations"),
     ]
     for ref_id, tab_name in subteams:
         r = parse_purchase_text(f'{ref_id}, 100.00, test')

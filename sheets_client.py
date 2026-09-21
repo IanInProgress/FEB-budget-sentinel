@@ -36,8 +36,8 @@ PURCHASE_LOG_HEADERS = [
     "is_unaccounted",
     "subteam_available_before",
     "subteam_available_after",
-    "bank_available_before",
-    "bank_available_after",
+    "purchasing_power_before",
+    "purchasing_power_after",
     "receipt_link",
     "rejection_reason",
     "bot_assessment",
@@ -60,8 +60,8 @@ PURCHASE_LOG_HEADERS_LEGACY = [
     "is_unaccounted",
     "subteam_available_before",
     "subteam_available_after",
-    "bank_available_before",
-    "bank_available_after",
+    "purchasing_power_before",
+    "purchasing_power_after",
     "receipt_link",
     "rejection_reason",
     "bot_assessment",
@@ -314,9 +314,25 @@ class SheetsClient:
         logger.info("Fetched %s budget lines from tab %r", len(lines), tab_name)
         return lines
 
+    def get_budget_tab_url(self, *, tab_name: str) -> str:
+        """Return a direct link to a verified budget worksheet tab."""
+        try:
+            worksheet = self._sh.worksheet(tab_name)
+        except WorksheetNotFound:
+            raise
+        except Exception as e:
+            raise SheetsClientError(f"Failed to open tab: {tab_name}") from e
+
+        return f"https://docs.google.com/spreadsheets/d/{self._spreadsheet_id}/edit#gid={worksheet.id}"
+
+    def get_spreadsheet_url(self, *, spreadsheet_id: str) -> str:
+        """Verify access to a spreadsheet and return its view URL."""
+        self._open_spreadsheet_with_retry(spreadsheet_id)
+        return f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}/edit"
+
     def _ensure_config_tab(self) -> None:
         """
-        Ensure _Config tab exists with request_counter and bank_available. Create if missing.
+        Ensure _Config tab exists with request and balance keys. Create if missing.
         """
         try:
             self._sh.worksheet("_Config")
@@ -325,8 +341,10 @@ class SheetsClient:
                 ws = self._sh.add_worksheet(title="_Config", rows=10, cols=2)
                 ws.append_row(["key", "value"])
                 ws.append_row(["request_counter", "0"])
-                ws.append_row(["bank_available", "0"])
-                logger.info("Created _Config tab with request_counter and bank_available initialized to 0")
+                ws.append_row(["reimbursement_counter", "0"])
+                ws.append_row(["purchasing_power", "0"])
+                ws.append_row(["bank_balance", "0"])
+                logger.info("Created _Config tab with request and balance keys initialized to 0")
             except Exception as e:
                 logger.error("Failed to create _Config tab: %s", e)
                 raise SheetsClientError("Could not create _Config tab") from e
@@ -391,11 +409,12 @@ class SheetsClient:
 
         raise SheetsClientError("Could not update request counter")
 
-    def get_bank_available(self) -> float:
-        """
-        Get the current bank_available from _Config tab.
-        Returns the bank balance.
-        """
+    def _get_config_amount(
+        self,
+        key: str,
+        *,
+        legacy_keys: tuple[str, ...] = (),
+    ) -> float:
         self._ensure_config_tab()
 
         try:
@@ -411,21 +430,27 @@ class SheetsClient:
             raise SheetsClientError("Failed to read _Config tab") from e
 
         for row in values:
-            if len(row) > 0 and row[0] == "bank_available":
+            if len(row) > 0 and row[0] == key:
                 try:
                     raw_value = row[1] if len(row) > 1 else ""
                     return float(coerce_money(raw_value, default=0.0))
                 except (ValueError, IndexError):
                     return 0.0
 
-        logger.warning("bank_available not found in _Config tab, returning 0")
+        for legacy_key in legacy_keys:
+            for row in values:
+                if len(row) > 0 and row[0] == legacy_key:
+                    logger.warning("%s missing; using legacy %s value", key, legacy_key)
+                    try:
+                        raw_value = row[1] if len(row) > 1 else ""
+                        return float(coerce_money(raw_value, default=0.0))
+                    except (ValueError, IndexError):
+                        return 0.0
+
+        logger.warning("%s not found in _Config tab, returning 0", key)
         return 0.0
 
-    def update_bank_available(self, new_amount: float) -> bool:
-        """
-        Update bank_available in _Config tab.
-        Returns True if successful.
-        """
+    def _update_config_amount(self, key: str, new_amount: float) -> bool:
         self._ensure_config_tab()
 
         try:
@@ -442,27 +467,50 @@ class SheetsClient:
 
         config_row_num = None
         for i, row in enumerate(values):
-            if len(row) > 0 and row[0] == "bank_available":
+            if len(row) > 0 and row[0] == key:
                 config_row_num = i + 1
                 break
 
         if config_row_num is None:
-            logger.warning("bank_available not found in _Config tab, appending")
+            logger.warning("%s not found in _Config tab, appending", key)
             try:
-                ws.append_row(["bank_available", new_amount])
-                logger.info("Added bank_available to _Config: %s", new_amount)
+                ws.append_row([key, new_amount])
+                logger.info("Added %s to _Config: %s", key, new_amount)
                 return True
             except Exception as e:
-                logger.error("Failed to append bank_available: %s", e)
+                logger.error("Failed to append %s: %s", key, e)
                 return False
 
         try:
             ws.update_cell(config_row_num, 2, new_amount)
-            logger.info("Updated bank_available in _Config: %s", new_amount)
+            logger.info("Updated %s in _Config: %s", key, new_amount)
             return True
         except Exception as e:
-            logger.error("Failed to update bank_available in _Config: %s", e)
+            logger.error("Failed to update %s in _Config: %s", key, e)
             return False
+
+    def get_purchasing_power(self) -> float:
+        return self._get_config_amount(
+            "purchasing_power",
+            legacy_keys=("purchasing_power_available", "bank_available"),
+        )
+
+    def update_purchasing_power(self, new_amount: float) -> bool:
+        return self._update_config_amount("purchasing_power", new_amount)
+
+    def get_bank_balance(self) -> float:
+        return self._get_config_amount("bank_balance", legacy_keys=("bank_available",))
+
+    def update_bank_balance(self, new_amount: float) -> bool:
+        return self._update_config_amount("bank_balance", new_amount)
+
+    def get_bank_available(self) -> float:
+        """Backward-compatible alias for the old bank_available key."""
+        return self.get_bank_balance()
+
+    def update_bank_available(self, new_amount: float) -> bool:
+        """Backward-compatible alias for updating the actual bank balance."""
+        return self.update_bank_balance(new_amount)
 
     def _ensure_purchases_log_tab(self) -> str:
         """
@@ -676,7 +724,7 @@ class SheetsClient:
         amount_usd: float,
         is_unaccounted: bool,
         subteam_available_before: float | None,
-        bank_available_before: float | None,
+        purchasing_power_before: float | None,
         receipt_link: str | None,
         bot_assessment: str,
     ) -> bool:
@@ -707,8 +755,8 @@ class SheetsClient:
             str(bool(is_unaccounted)).lower(),
             subteam_available_before if subteam_available_before is not None else "",
             "",  # subteam_available_after (filled on approval/rejection)
-            bank_available_before if bank_available_before is not None else "",
-            "",  # bank_available_after (filled on approval/rejection)
+            purchasing_power_before if purchasing_power_before is not None else "",
+            "",  # purchasing_power_after (filled on approval/rejection)
             receipt_link or "",
             "",  # rejection_reason
             bot_assessment,
@@ -732,7 +780,7 @@ class SheetsClient:
         manager_id: str,
         bundle_line_number: int | None = None,
         subteam_available_after: float | None = None,
-        bank_available_after: float | None = None,
+        purchasing_power_after: float | None = None,
     ) -> bool:
         """
         Update purchase log row with approval/rejection details.
@@ -775,11 +823,11 @@ class SheetsClient:
                     {"range": f"D{row_num}", "values": [[status]]},
                     {"range": f"F{row_num}", "values": [[manager_id]]},
                 ])
-                # Column N: subteam_available_after, Column P: bank_available_after
+                # Column N: subteam_available_after, Column P: purchasing_power_after
                 if subteam_available_after is not None:
                     batch_data.append({"range": f"N{row_num}", "values": [[subteam_available_after]]})
-                if bank_available_after is not None:
-                    batch_data.append({"range": f"P{row_num}", "values": [[bank_available_after]]})
+                if purchasing_power_after is not None:
+                    batch_data.append({"range": f"P{row_num}", "values": [[purchasing_power_after]]})
             ws.batch_update(batch_data)
             logger.info("Updated purchase log status for %s: %s by %s", request_id, status, manager_id)
             return True

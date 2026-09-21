@@ -19,6 +19,8 @@ env/
 
 # Sensitive files
 google-service-account.json
+oauth-client.json
+drive-token.json
 
 # IDE
 .vscode/
