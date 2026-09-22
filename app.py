@@ -7,6 +7,7 @@ import re
 import subprocess
 import threading
 import time
+import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Any
@@ -46,24 +47,46 @@ MANAGER_REJECT_TOKENS = ("❌", ":x:", ":no_entry:")
 MANAGER_DECISION_SCAN_INTERVAL_SECONDS = 30
 MANAGER_DECISION_SCAN_HISTORY_LIMIT = 100
 TUTORIAL_DELETE_DELAY_SECONDS = 180
-DEPLOYED_COMMIT_VERSION = "v6"
+GITHUB_REPOSITORY = "IanInProgress/FEB-budget-sentinel"
+GITHUB_BRANCH = "main"
 
 
 def _get_bot_version() -> str:
+    github_url = f"https://api.github.com/repos/{GITHUB_REPOSITORY}/commits/{GITHUB_BRANCH}"
+    github_request = urllib.request.Request(
+        github_url,
+        headers={
+            "Accept": "application/vnd.github+json",
+            "User-Agent": "FEB-Purchase-Bot",
+        },
+    )
+    try:
+        with urllib.request.urlopen(github_request, timeout=5) as response:
+            payload = json.load(response)
+        commit_sha = str(payload.get("sha") or "").strip()
+        if commit_sha:
+            return commit_sha[:7]
+    except Exception:
+        pass
+
+    deployed_sha = os.getenv("RAILWAY_GIT_COMMIT_SHA", "").strip()
+    if deployed_sha:
+        return deployed_sha[:7]
+
     try:
         result = subprocess.run(
-            ["git", "rev-list", "--count", "HEAD"],
+            ["git", "rev-parse", "--short", "HEAD"],
             cwd=os.path.dirname(__file__),
             check=True,
             capture_output=True,
             text=True,
         )
-        commit_count = result.stdout.strip()
-        if commit_count.isdigit():
-            return f"v{commit_count}"
+        commit_sha = result.stdout.strip()
+        if commit_sha:
+            return commit_sha
     except (OSError, subprocess.CalledProcessError):
         pass
-    return DEPLOYED_COMMIT_VERSION
+    return "unknown"
 
 
 def _tutorial_delete_is_allowed(
@@ -1195,7 +1218,7 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
         client.chat_postEphemeral(
             channel=channel_id,
             user=body.get("user_id"),
-            text=f"FEB Purchase Bot version: *{_get_bot_version()}*",
+            text=f"FEB Purchase Bot latest GitHub commit: *{_get_bot_version()}*",
         )
 
     @bolt_app.command("/reference")

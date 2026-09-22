@@ -1,5 +1,4 @@
 from app import (
-	DEPLOYED_COMMIT_VERSION,
 	TUTORIAL_DELETE_DELAY_SECONDS,
 	_extract_receipt_links_from_message,
 	_normalize_receipt_links,
@@ -21,16 +20,31 @@ def test_tutorial_delete_is_sender_only_until_three_minutes():
 	) is True
 
 
-def test_bot_version_is_commit_count_format():
+def test_bot_version_is_short_commit_sha(monkeypatch):
+	class Response:
+		def __enter__(self):
+			return self
+
+		def __exit__(self, *args):
+			return False
+
+		def read(self):
+			return b'{"sha":"1234567890abcdef"}'
+
+	monkeypatch.setattr("app.urllib.request.urlopen", lambda *args, **kwargs: Response())
 	version = _get_bot_version()
-	assert version.startswith("v")
-	assert version[1:].isdigit() or version == "vunknown"
+	assert version == "1234567"
 
 
-def test_bot_version_uses_deployment_fallback_constant(monkeypatch):
+def test_bot_version_uses_deployment_commit_fallback(monkeypatch):
+	monkeypatch.setattr(
+		"app.urllib.request.urlopen",
+		lambda *args, **kwargs: (_ for _ in ()).throw(OSError()),
+	)
+	monkeypatch.setenv("RAILWAY_GIT_COMMIT_SHA", "abcdef123456")
 	monkeypatch.setattr("app.subprocess.run", lambda *args, **kwargs: (_ for _ in ()).throw(OSError()))
 
-	assert _get_bot_version() == DEPLOYED_COMMIT_VERSION
+	assert _get_bot_version() == "abcdef1"
 
 
 def test_tutorial_delete_rejects_legacy_payload_for_other_users():
