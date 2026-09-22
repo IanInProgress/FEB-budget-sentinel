@@ -1741,7 +1741,6 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                 text="⏳ Your purchase request is already being processed. Please wait for the manager's response."
             )
             return
-        PENDING_CONFIRMATIONS.add(confirmation_key)
 
         if not receipt_links:
             auto_download_urls, auto_links_ts = _find_recent_receipt_download_urls_for_user(
@@ -1755,13 +1754,14 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                 receipt_links = auto_download_urls
                 confirmation_data["receipt_links"] = auto_download_urls
             else:
-                PENDING_CONFIRMATIONS.discard(confirmation_key)
                 client.chat_postMessage(
                     channel=channel_id,
                     thread_ts=original_message_ts,
                     text="Please send your receipt image(s) in this request thread, then click Confirm again.",
                 )
                 return
+
+        PENDING_CONFIRMATIONS.add(confirmation_key)
 
         def run() -> None:
             try:
