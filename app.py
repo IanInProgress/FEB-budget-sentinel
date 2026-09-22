@@ -340,6 +340,8 @@ def _extract_receipt_link_from_file_obj(file_obj: dict[str, Any]) -> str | None:
 
 def _extract_receipt_links_from_message(message: dict[str, Any]) -> list[str]:
     links: list[str] = []
+    seen_file_ids: set[str] = set()
+    seen_links: set[str] = set()
     for file_obj in message.get("files") or []:
         if not isinstance(file_obj, dict):
             continue
@@ -347,8 +349,12 @@ def _extract_receipt_links_from_message(message: dict[str, Any]) -> list[str]:
         filetype = str(file_obj.get("filetype") or "").lower()
         if mimetype.startswith("image/") or filetype in {"png", "jpg", "jpeg", "gif", "webp", "heic", "heif"}:
             link = _extract_receipt_link_from_file_obj(file_obj)
-            if link:
+            file_id = str(file_obj.get("id") or "").strip()
+            if link and (not file_id or file_id not in seen_file_ids) and link not in seen_links:
                 links.append(link)
+                seen_links.add(link)
+                if file_id:
+                    seen_file_ids.add(file_id)
     return links
 
 
@@ -765,6 +771,8 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
             return [], None
 
         download_urls: list[str] = []
+        seen_file_ids: set[str] = set()
+        seen_download_urls: set[str] = set()
         latest_receipt_ts: str | None = None
         for msg in history.get("messages") or []:
             if (msg.get("user") or "") != user_id:
@@ -784,13 +792,21 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                 url_private = file_obj.get("url_private_download") or file_obj.get("url_private")
                 permalink = file_obj.get("permalink")
                 download_url = url_private if isinstance(url_private, str) else permalink
-                if isinstance(download_url, str) and download_url.strip():
-                    message_download_urls.append(download_url.strip())
-                if message_download_urls:
-                    download_urls.extend(message_download_urls)
-                    latest_receipt_ts = message_ts
+                file_id = str(file_obj.get("id") or "").strip()
+                normalized_download_url = download_url.strip() if isinstance(download_url, str) else ""
+                if normalized_download_url and (
+                    (file_id and file_id not in seen_file_ids)
+                    or (not file_id and normalized_download_url not in seen_download_urls)
+                ):
+                    message_download_urls.append(normalized_download_url)
+                    seen_download_urls.add(normalized_download_url)
+                    if file_id:
+                        seen_file_ids.add(file_id)
+            if message_download_urls:
+                download_urls.extend(message_download_urls)
+                latest_receipt_ts = message_ts
 
-            return download_urls, latest_receipt_ts
+        return download_urls, latest_receipt_ts
 
     def _is_recent_slack_message_ts(message_ts: str | None, max_age_seconds: int) -> bool:
         if not message_ts:

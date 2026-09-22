@@ -77,6 +77,18 @@ def test_extract_receipt_links_preserves_all_image_attachments():
 	assert _extract_receipt_links_from_message(message) == ["first-image", "second-image"]
 
 
+def test_extract_receipt_links_deduplicates_repeated_file_metadata():
+	message = {
+		"files": [
+			{"id": "F123", "mimetype": "image/jpeg", "permalink": "first-image"},
+			{"id": "F123", "mimetype": "image/jpeg", "permalink": "first-image"},
+			{"id": "F456", "mimetype": "image/jpeg", "permalink": "second-image"},
+		]
+	}
+
+	assert _extract_receipt_links_from_message(message) == ["first-image", "second-image"]
+
+
 def test_normalize_receipt_links_supports_legacy_single_link_payload():
 	assert _normalize_receipt_links({"receipt_link": "legacy-link"}) == ["legacy-link"]
 	assert _normalize_receipt_links({"receipt_links": ["first", "", "second"]}) == ["first", "second"]
