@@ -1721,6 +1721,30 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                     )
                     return
 
+                # Replace the generic "draft" root message with the assigned REQ ID.
+                try:
+                    if len(items) == 1:
+                        only_bundle_item = items[0]
+                        anchor_text = (
+                            f"Purchase request *{request_id}* by <@{user_id}>\n"
+                            f"{only_bundle_item['reference_id']} | "
+                            f"{format_usd(float(only_bundle_item['requested_amount']))} | "
+                            f"{only_bundle_item['reason']}"
+                        )
+                    else:
+                        anchor_text = (
+                            f"Bulk purchase request *{request_id}* by <@{user_id}>\n"
+                            f"Items: {len(items)} | Total: {format_usd(_bundle_total_amount(items))}\n"
+                            f"{_format_item_lines_for_message(items)}"
+                        )
+                    client.chat_update(
+                        channel=channel_id,
+                        ts=original_message_ts,
+                        text=anchor_text,
+                    )
+                except Exception:
+                    logger.exception("Failed to update draft anchor message with request id %s", request_id)
+
                 receipt_drive_link: str | None = None
                 if receipt_drive and receipt_download_urls:
                     try:
