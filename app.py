@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import re
+import subprocess
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -45,6 +46,25 @@ MANAGER_APPROVE_TOKENS = ("✅", ":white_check_mark:", ":heavy_check_mark:")
 MANAGER_REJECT_TOKENS = ("❌", ":x:", ":no_entry:")
 MANAGER_DECISION_SCAN_INTERVAL_SECONDS = 30
 MANAGER_DECISION_SCAN_HISTORY_LIMIT = 100
+
+
+def _get_bot_version() -> str:
+    deployed_sha = os.getenv("RAILWAY_GIT_COMMIT_SHA", "").strip()
+    if deployed_sha:
+        return deployed_sha[:7]
+
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=os.path.dirname(__file__),
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return "unknown"
+
+    return result.stdout.strip() or "unknown"
 
 
 def _configure_logging(level: str) -> None:
@@ -1062,6 +1082,21 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
             )
         except Exception:
             logger.exception("Failed to open /bigorder modal")
+
+    @bolt_app.command("/version")
+    def handle_version_command(ack, body, client):
+        ack()
+
+        channel_id = body.get("channel_id")
+        user_id = body.get("user_id")
+        if not channel_id or not user_id:
+            return
+
+        client.chat_postEphemeral(
+            channel=channel_id,
+            user=user_id,
+            text=f"FEB Purchase Bot version: *{_get_bot_version()}*",
+        )
 
     @bolt_app.command("/reference")
     def handle_reference_command(ack, body, client):

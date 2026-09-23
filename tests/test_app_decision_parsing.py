@@ -1,4 +1,10 @@
-from app import _parse_manager_decision_text
+from app import _get_bot_version, _parse_manager_decision_text
+
+
+def test_bot_version_uses_deployment_commit(monkeypatch):
+	monkeypatch.setenv("RAILWAY_GIT_COMMIT_SHA", "abcdef123456")
+
+	assert _get_bot_version() == "abcdef1"
 
 
 def test_parse_manager_decision_full_approval():
