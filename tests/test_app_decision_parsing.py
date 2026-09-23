@@ -33,3 +33,9 @@ def test_parse_manager_decision_ignores_req_id_digits():
 	assert approved is True
 	assert rejected is False
 	assert line_numbers == {1, 2}
+
+
+def test_parse_manager_decision_rejects_aliases_and_prose():
+	assert _parse_manager_decision_text(":white_check_mark:") == (False, False, None)
+	assert _parse_manager_decision_text(":x:") == (False, False, None)
+	assert _parse_manager_decision_text("Please ✅") == (False, False, None)

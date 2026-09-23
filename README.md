@@ -1,6 +1,8 @@
 # FEB Purchase Bot
 
 A Slack-integrated budget management system for Formula Electric Berkeley. Members submit purchase requests, managers review and approve via reactions, and the bot automatically updates Google Sheets in real-time.
+A Slack-integrated budget management system for Formula Electric Berkeley. Members submit purchase requests, managers review and approve in request threads, and the bot automatically updates Google Sheets in real-time.
+- **Thread-Based Approval** — Managers reply with ✅ or ❌ emoji in the request thread (receipt image also posted in thread); reactions do not approve requests
 
 ## Features
 
@@ -38,7 +40,7 @@ A Slack-integrated budget management system for Formula Electric Berkeley. Membe
 
 - Python 3.9+
 - Slack workspace with bot permissions:
-   - **OAuth Scopes**: `chat:write`, `chat:write.public`, `commands`, `channels:history`, `groups:history`, `channels:join`
+   - **OAuth Scopes**: `chat:write`, `chat:write.public`, `commands`, `channels:history`, `groups:history`, `reactions:read`, `reactions:write`, `channels:join`
   - **Event Subscriptions**: `message.channels`, `message.groups`
 - Google Sheets API access with service account
 - Google Sheet with budget data (see Google Sheets Format section below)
@@ -252,9 +254,9 @@ The bot uses the following reference ID prefixes to identify subteams:
 
 2. **Approve or Reject**
     - Reply in the thread with a decision message:
-       - To **approve all items**: send `✅` (or `:white_check_mark:`)
+      - To **approve all items**: send `✅`
        - To **approve selected items in a bigorder**: send `✅` plus item numbers (example: `✅ 1 2 3`)
-       - To **reject all items**: send `❌` (or `:x:`)
+      - To **reject all items**: send `❌`
     - For selective approvals, any item numbers not listed are rejected automatically.
    - For rejections, the bot will prompt you to provide a reason in the same thread
    - The bot forwards the rejection reason to the requester via DM

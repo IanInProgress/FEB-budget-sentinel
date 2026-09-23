@@ -42,8 +42,8 @@ PENDING_REJECTION_REASONS: dict[str, dict[str, Any]] = {}  # manager message_ts 
 PENDING_CONFIRMATIONS: set[tuple[str, str, str]] = set()  # (user_id, channel_id, original_message_ts) -> in-flight
 REJECTION_REASON_TIMEOUT_SECONDS = 600
 REQUEST_ID_PATTERN = re.compile(r"\bREQ-[A-Z0-9]{6,}\b", re.IGNORECASE)
-MANAGER_APPROVE_TOKENS = ("✅", ":white_check_mark:", ":heavy_check_mark:")
-MANAGER_REJECT_TOKENS = ("❌", ":x:", ":no_entry:")
+MANAGER_APPROVE_TOKEN = "✅"
+MANAGER_REJECT_TOKEN = "❌"
 MANAGER_DECISION_SCAN_INTERVAL_SECONDS = 30
 MANAGER_DECISION_SCAN_HISTORY_LIMIT = 100
 
@@ -212,19 +212,12 @@ def _parse_manager_decision_text(text: str | None) -> tuple[bool, bool, set[int]
     if not candidate:
         return False, False, None
 
-    has_approve = any(token in candidate for token in MANAGER_APPROVE_TOKENS)
-    has_reject = any(token in candidate for token in MANAGER_REJECT_TOKENS)
-
-    # Ignore ambiguous messages containing both approve and reject tokens.
-    if has_approve and has_reject:
-        return False, False, None
-
-    if has_reject:
+    if candidate == MANAGER_REJECT_TOKEN:
         return False, True, None
 
-    if has_approve:
-        # Prevent request IDs like REQ-000123 from being interpreted as item numbers.
-        text_without_req_ids = REQUEST_ID_PATTERN.sub(" ", candidate)
+    # Allow a request ID alongside an approval, but do not treat its digits as item numbers.
+    text_without_req_ids = REQUEST_ID_PATTERN.sub(" ", candidate)
+    if re.fullmatch(rf"{re.escape(MANAGER_APPROVE_TOKEN)}(?:\s+\d+)*", text_without_req_ids):
         line_numbers = {int(m.group(0)) for m in re.finditer(r"\b\d+\b", text_without_req_ids)}
         return True, False, (line_numbers or None)
 
@@ -483,6 +476,23 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                         )
 
                 if approved_item_summaries and rejected_item_summaries:
+                    try:
+                        bolt_app.client.reactions_add(
+                            channel=settings.manager_channel_id,
+                            timestamp=thread_ts,
+                            name="white_check_mark",
+                        )
+                    except Exception as e:
+                        logger.warning("Failed to add manager decision reaction: %s", e)
+                    if original_channel_id and original_message_ts:
+                        try:
+                            bolt_app.client.reactions_add(
+                                channel=original_channel_id,
+                                timestamp=original_message_ts,
+                                name="white_check_mark",
+                            )
+                        except Exception as e:
+                            logger.warning("Failed to add partial approval reaction: %s", e)
                     bolt_app.client.chat_postMessage(
                         channel=str(requester_id),
                         text=(
@@ -505,6 +515,14 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                         ),
                     )
                 elif approved_item_summaries:
+                    try:
+                        bolt_app.client.reactions_add(
+                            channel=settings.manager_channel_id,
+                            timestamp=thread_ts,
+                            name="white_check_mark",
+                        )
+                    except Exception as e:
+                        logger.warning("Failed to add manager decision reaction: %s", e)
                     bolt_app.client.chat_postMessage(
                         channel=str(requester_id),
                         text=(
@@ -1192,13 +1210,7 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                     "4. Upload your receipt image in the channel\n"
                     "5. Click *Confirm*"
                 )
-                examples_text = (
-                    "*Examples*\n"
-                    "`/purchase` (opens blank form)\n"
-                    "`/purchase EECS-025, 42.50, Zipties for cable management` (prefills details)\n"
-                    "`/purchase ADMIN-000 Office Supplies, 50.00, Need for workspace`\n"
-                    "(for `-000` IDs, include an item name after the reference ID)"
-                )
+                examples_text = ""
             else:
                 guide_title = "Help: /bigorder"
                 guide_text = (
@@ -1255,9 +1267,23 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                     "type": "section",
                     "text": {"type": "mrkdwn", "text": f"*{guide_title}*\n{guide_text}"},
                 },
+                *([
+                    {
+                        "type": "section",
+                        "text": {"type": "mrkdwn", "text": examples_text},
+                    }
+                ] if examples_text else []),
                 {
                     "type": "section",
-                    "text": {"type": "mrkdwn", "text": examples_text},
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": (
+                            "*For unaccounted items*\n"
+                            "Use a reference ID ending in `-000` when the item is not already listed in the budget. "
+                            "Include the item name after the reference ID, followed by the amount and reason.\n"
+                            "Format: `ADMIN-000 Item Name, amount, reason`"
+                        ),
+                    },
                 },
                 {
                     "type": "section",
@@ -2076,6 +2102,15 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                         )
                     except Exception as e:
                         logger.warning("Failed to add X reaction: %s", e)
+
+                try:
+                    client.reactions_add(
+                        channel=settings.manager_channel_id,
+                        timestamp=thread_ts,
+                        name="x",
+                    )
+                except Exception as e:
+                    logger.warning("Failed to add manager rejection reaction: %s", e)
 
                 item_lines = "\n".join(
                     f"Item {item['line_number']}: {item['reference_id']} | {item['item_name']} | {format_usd(float(item['requested_amount']))}"
