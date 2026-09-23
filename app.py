@@ -1786,7 +1786,7 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                         is_unaccounted=bool(raw_item.get("is_unaccounted", False)),
                         subteam_available_before=report.available_budget,
                         bank_available_before=bank_available_before,
-                        receipt_link=receipt_links[0] if receipt_links else "",
+                        receipt_link=receipt_drive_link or (receipt_links[0] if receipt_links else ""),
                         bot_assessment=_recommendation_header(
                             report,
                             settings.item_budget_reject_threshold_percent_of_estimate,
