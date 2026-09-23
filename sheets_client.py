@@ -292,23 +292,12 @@ class SheetsClient:
 
         self._ensure_amount_reimbursed_header(ws, values, tab_name)
 
-        # Some sheets store Available Budget (col F) once per subteam tab rather than per row.
-        # If exactly one numeric value exists in col F, use it as fallback for rows without F.
-        tab_available_budget: float | None = None
-        available_candidates: list[float] = []
-        for row in values[1:]:
-            available_raw = row[5] if len(row) > 5 else ""
-            if not str(available_raw).strip():
-                continue
-            try:
-                parsed_available = coerce_money(available_raw, default=None)
-            except Exception:
-                parsed_available = None
-            if parsed_available is not None:
-                available_candidates.append(parsed_available)
-
-        if len(available_candidates) == 1:
-            tab_available_budget = available_candidates[0]
+        # Subteam Available Budget lives in a single cell, F2; every row falls back to it.
+        f2_raw = values[1][5] if len(values) > 1 and len(values[1]) > 5 else ""
+        try:
+            tab_available_budget = coerce_money(f2_raw, default=None)
+        except Exception:
+            tab_available_budget = None
 
         # Row 1 is header; skip it
         lines: list[BudgetLine] = []
@@ -357,6 +346,7 @@ class SheetsClient:
                     row_number=i,
                 )
             )
+
 
         self._cache[tab_name] = CachedTab(fetched_at=now, lines=lines)
         logger.info("Fetched %s budget lines from tab %r", len(lines), tab_name)
@@ -1267,8 +1257,9 @@ class SheetsClient:
         new_ref_id = f"{prefix}-{new_num:03d}"
         
         # Append new row: [ref_id, item_name, estimated_budget, pending_spend, amount_reimbursed]
-        # Approved unaccounted items start as pending until reimbursement.
-        new_row = [new_ref_id, item_name, 0.0, initial_spending, 0.0]
+        # Only pending_spend is populated; estimated_budget/reimbursed stay blank
+        # so the row doesn't show a negative computed budget.
+        new_row = [new_ref_id, item_name, "", initial_spending, ""]
         
         try:
             ws.append_row(new_row)
