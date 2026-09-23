@@ -4,10 +4,8 @@ import json
 import logging
 import os
 import re
-import subprocess
 import threading
 import time
-import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Any
@@ -21,6 +19,7 @@ from budget_checker import build_budget_report
 from config import Settings, load_settings
 from formatters import (
     _recommendation_header,
+    format_reference_lookup_dm,
     format_manager_bundle_notification_blocks,
     format_manager_notification_blocks,
 )
@@ -46,62 +45,6 @@ MANAGER_APPROVE_TOKENS = ("✅", ":white_check_mark:", ":heavy_check_mark:")
 MANAGER_REJECT_TOKENS = ("❌", ":x:", ":no_entry:")
 MANAGER_DECISION_SCAN_INTERVAL_SECONDS = 30
 MANAGER_DECISION_SCAN_HISTORY_LIMIT = 100
-TUTORIAL_DELETE_DELAY_SECONDS = 180
-GITHUB_REPOSITORY = "IanInProgress/FEB-budget-sentinel"
-GITHUB_BRANCH = "main"
-
-
-def _get_bot_version() -> str:
-    github_url = f"https://api.github.com/repos/{GITHUB_REPOSITORY}/commits/{GITHUB_BRANCH}"
-    github_request = urllib.request.Request(
-        github_url,
-        headers={
-            "Accept": "application/vnd.github+json",
-            "User-Agent": "FEB-Purchase-Bot",
-        },
-    )
-    try:
-        with urllib.request.urlopen(github_request, timeout=5) as response:
-            payload = json.load(response)
-        commit_sha = str(payload.get("sha") or "").strip()
-        if commit_sha:
-            return commit_sha[:7]
-    except Exception:
-        pass
-
-    deployed_sha = os.getenv("RAILWAY_GIT_COMMIT_SHA", "").strip()
-    if deployed_sha:
-        return deployed_sha[:7]
-
-    try:
-        result = subprocess.run(
-            ["git", "rev-parse", "--short", "HEAD"],
-            cwd=os.path.dirname(__file__),
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        commit_sha = result.stdout.strip()
-        if commit_sha:
-            return commit_sha
-    except (OSError, subprocess.CalledProcessError):
-        pass
-    return "unknown"
-
-
-def _tutorial_delete_is_allowed(
-    actor_id: str,
-    owner_id: str | None,
-    created_at: object,
-    now: float | None = None,
-) -> bool:
-    if actor_id == owner_id:
-        return True
-    if not isinstance(created_at, (int, float)):
-        return False
-    current_time = time.time() if now is None else now
-    return current_time - created_at >= TUTORIAL_DELETE_DELAY_SECONDS
-RECEIPT_AUTO_LOOKBACK_SECONDS = 900
 
 
 def _configure_logging(level: str) -> None:
@@ -331,56 +274,6 @@ def _format_item_lines_for_message(items: list[dict[str, Any]]) -> str:
     return "\n".join(parts)
 
 
-def _normalize_receipt_links(confirmation_data: dict[str, Any]) -> list[str]:
-    raw_links = confirmation_data.get("receipt_links")
-    if isinstance(raw_links, list):
-        links = [link.strip() for link in raw_links if isinstance(link, str) and link.strip()]
-        if links:
-            return links
-
-    legacy_link = confirmation_data.get("receipt_link")
-    if isinstance(legacy_link, str) and legacy_link.strip():
-        return [legacy_link.strip()]
-
-    return []
-
-
-def _extract_receipt_link_from_file_obj(file_obj: dict[str, Any]) -> str | None:
-    permalink = file_obj.get("permalink")
-    if isinstance(permalink, str) and permalink.strip():
-        return permalink.strip()
-
-    url_private = file_obj.get("url_private")
-    if isinstance(url_private, str) and url_private.strip():
-        return url_private.strip()
-
-    file_id = file_obj.get("id")
-    if isinstance(file_id, str) and file_id.strip():
-        return f"https://files.slack.com/files-pri/{file_id.strip()}"
-
-    return None
-
-
-def _extract_receipt_links_from_message(message: dict[str, Any]) -> list[str]:
-    links: list[str] = []
-    seen_file_ids: set[str] = set()
-    seen_links: set[str] = set()
-    for file_obj in message.get("files") or []:
-        if not isinstance(file_obj, dict):
-            continue
-        mimetype = str(file_obj.get("mimetype") or "").lower()
-        filetype = str(file_obj.get("filetype") or "").lower()
-        if mimetype.startswith("image/") or filetype in {"png", "jpg", "jpeg", "gif", "webp", "heic", "heif"}:
-            link = _extract_receipt_link_from_file_obj(file_obj)
-            file_id = str(file_obj.get("id") or "").strip()
-            if link and (not file_id or file_id not in seen_file_ids) and link not in seen_links:
-                links.append(link)
-                seen_links.add(link)
-                if file_id:
-                    seen_file_ids.add(file_id)
-    return links
-
-
 def create_server(settings: Settings) -> tuple[Flask, App]:
     _configure_logging(settings.log_level)
     logger = logging.getLogger("purchase_bot")
@@ -400,19 +293,18 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
     sheets.ensure_reimbursements_log_schema_on_startup()
     receipt_drive = None
     receipts_folder_id = settings.google_drive_receipts_folder_id or get_receipts_upload_folder_id()
-    if receipts_folder_id:
-        try:
-            receipt_drive = ReceiptDriveStorage(
-                folder_id=receipts_folder_id,
-                service_account_file=settings.google_service_account_file,
-                service_account_json=settings.google_service_account_json,
-                oauth_client_file=settings.google_drive_oauth_client_file,
-                oauth_client_json=settings.google_drive_oauth_client_json,
-                oauth_token_file=settings.google_drive_oauth_token_file,
-                oauth_token_json=settings.google_drive_oauth_token_json,
-            )
-        except ReceiptStorageError:
-            logger.exception("Google Drive receipt storage is unavailable")
+    try:
+        receipt_drive = ReceiptDriveStorage(
+            folder_id=receipts_folder_id,
+            service_account_file=settings.google_service_account_file,
+            service_account_json=settings.google_service_account_json,
+            oauth_client_file=settings.google_drive_oauth_client_file,
+            oauth_client_json=settings.google_drive_oauth_client_json,
+            oauth_token_file=settings.google_drive_oauth_token_file,
+            oauth_token_json=settings.google_drive_oauth_token_json,
+        )
+    except ReceiptStorageError:
+        logger.exception("Google Drive receipt storage is unavailable")
 
     decision_inflight_threads: set[str] = set()
     decision_inflight_lock = threading.Lock()
@@ -455,13 +347,14 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                 approved_total = 0.0
                 rejected_total = 0.0
 
-                purchasing_power_before_for_copy = None
-                running_purchasing_power = None
+                bank_before_for_copy = None
+                running_bank_available_for_log = None
                 try:
-                    purchasing_power_before_for_copy = sheets.get_purchasing_power()
-                    running_purchasing_power = purchasing_power_before_for_copy
+                    bank_before_for_copy = sheets.get_bank_available()
+                    # Bank cash balance changes on reimbursement, not on approval.
+                    running_bank_available_for_log = bank_before_for_copy
                 except Exception as e:
-                    logger.warning("Failed to read purchasing power: %s", e)
+                    logger.warning("Failed to read bank_available: %s", e)
 
                 approved_item_summaries: list[str] = []
                 rejected_item_summaries: list[str] = []
@@ -535,10 +428,10 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                         subteam_available_after = (
                             available_budget_before - amount if available_budget_before is not None else None
                         )
-                        purchasing_power_after_for_line = None
-                        if running_purchasing_power is not None:
-                            running_purchasing_power -= amount
-                            purchasing_power_after_for_line = running_purchasing_power
+                        bank_available_after_for_line = None
+                        if running_bank_available_for_log is not None:
+                            running_bank_available_for_log -= amount
+                            bank_available_after_for_line = running_bank_available_for_log
 
                         sheets.update_purchase_log_status(
                             request_id=request_id,
@@ -547,7 +440,7 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                             reviewed_at_utc=reviewed_at_utc,
                             manager_id=manager_id,
                             subteam_available_after=subteam_available_after,
-                            purchasing_power_after=purchasing_power_after_for_line,
+                            bank_available_after=bank_available_after_for_line,
                         )
                         approved_total += amount
                         approved_item_summaries.append(
@@ -562,16 +455,12 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                             reviewed_at_utc=reviewed_at_utc,
                             manager_id=manager_id,
                             subteam_available_after=subteam_after,
-                            purchasing_power_after=purchasing_power_before_for_copy,
+                            bank_available_after=bank_before_for_copy,
                         )
                         rejected_total += amount
                         rejected_item_summaries.append(
                             f"Item {line_number}: {reference_id} | {item_name} | {format_usd(amount)}"
                         )
-
-                if approved_total > 0 and running_purchasing_power is not None:
-                    if not sheets.update_purchasing_power(running_purchasing_power):
-                        raise SheetsClientError("Could not update purchasing power after approval")
 
                 if approved_item_summaries and rejected_item_summaries:
                     bolt_app.client.chat_postMessage(
@@ -749,96 +638,63 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
 
             time.sleep(interval_seconds)
 
-    def _find_recent_receipt_links_for_user(
+    def _extract_receipt_link_from_file_obj(file_obj: dict[str, Any]) -> str | None:
+        permalink = file_obj.get("permalink")
+        if isinstance(permalink, str) and permalink.strip():
+            return permalink.strip()
+
+        url_private = file_obj.get("url_private")
+        if isinstance(url_private, str) and url_private.strip():
+            return url_private.strip()
+
+        file_id = file_obj.get("id")
+        if isinstance(file_id, str) and file_id.strip():
+            return f"https://files.slack.com/files-pri/{file_id.strip()}"
+
+        return None
+
+    def _find_receipt_download_urls_for_thread(
         client,
         channel_id: str,
         user_id: str,
         *,
         thread_ts: str,
     ) -> tuple[list[str], str | None]:
-        """
-        Return all recent receipt links posted by the requester in the request thread.
-        """
+        """Return every requester-uploaded image in the request thread."""
         try:
             history = client.conversations_replies(channel=channel_id, ts=thread_ts, limit=100)
         except Exception:
             logger.exception("Failed to load request thread for receipt lookup")
             return [], None
 
-        links: list[str] = []
-        latest_receipt_ts: str | None = None
-        for msg in history.get("messages") or []:
-            if (msg.get("user") or "") != user_id:
-                continue
-            message_ts = str(msg.get("ts") or "")
-            if not _is_recent_slack_message_ts(message_ts, RECEIPT_AUTO_LOOKBACK_SECONDS):
-                continue
-            message_links = _extract_receipt_links_from_message(msg)
-            if message_links:
-                links.extend(message_links)
-                latest_receipt_ts = message_ts
-
-        return links, latest_receipt_ts
-
-    def _find_recent_receipt_download_urls_for_user(
-        client,
-        channel_id: str,
-        user_id: str,
-        *,
-        thread_ts: str,
-    ) -> tuple[list[str], str | None]:
-        try:
-            history = client.conversations_replies(channel=channel_id, ts=thread_ts, limit=100)
-        except Exception:
-            logger.exception("Failed to load request thread for receipt download")
-            return [], None
-
         download_urls: list[str] = []
         seen_file_ids: set[str] = set()
-        seen_download_urls: set[str] = set()
+        seen_urls: set[str] = set()
         latest_receipt_ts: str | None = None
-        for msg in history.get("messages") or []:
-            if (msg.get("user") or "") != user_id:
+        for message in history.get("messages") or []:
+            if (message.get("user") or "") != user_id:
                 continue
-            message_ts = str(msg.get("ts") or "")
-            if not _is_recent_slack_message_ts(message_ts, RECEIPT_AUTO_LOOKBACK_SECONDS):
-                continue
-
-            message_download_urls: list[str] = []
-            for file_obj in msg.get("files") or []:
+            for file_obj in message.get("files") or []:
                 if not isinstance(file_obj, dict):
                     continue
                 mimetype = str(file_obj.get("mimetype") or "").lower()
                 filetype = str(file_obj.get("filetype") or "").lower()
                 if not (mimetype.startswith("image/") or filetype in {"png", "jpg", "jpeg", "gif", "webp", "heic", "heif"}):
                     continue
-                url_private = file_obj.get("url_private_download") or file_obj.get("url_private")
-                permalink = file_obj.get("permalink")
-                download_url = url_private if isinstance(url_private, str) else permalink
+                download_url = file_obj.get("url_private_download") or file_obj.get("url_private")
+                if not isinstance(download_url, str) or not download_url.strip():
+                    continue
                 file_id = str(file_obj.get("id") or "").strip()
-                normalized_download_url = download_url.strip() if isinstance(download_url, str) else ""
-                if normalized_download_url and (
-                    (file_id and file_id not in seen_file_ids)
-                    or (not file_id and normalized_download_url not in seen_download_urls)
-                ):
-                    message_download_urls.append(normalized_download_url)
-                    seen_download_urls.add(normalized_download_url)
-                    if file_id:
-                        seen_file_ids.add(file_id)
-            if message_download_urls:
-                download_urls.extend(message_download_urls)
-                latest_receipt_ts = message_ts
+                normalized_url = download_url.strip()
+                if (file_id and file_id in seen_file_ids) or (not file_id and normalized_url in seen_urls):
+                    continue
+                download_urls.append(normalized_url)
+                seen_urls.add(normalized_url)
+                if file_id:
+                    seen_file_ids.add(file_id)
+                latest_receipt_ts = str(message.get("ts") or "") or latest_receipt_ts
 
         return download_urls, latest_receipt_ts
-
-    def _is_recent_slack_message_ts(message_ts: str | None, max_age_seconds: int) -> bool:
-        if not message_ts:
-            return False
-        try:
-            posted_at = float(message_ts)
-        except Exception:
-            return False
-        return (time.time() - posted_at) <= float(max_age_seconds)
 
     def _open_purchase_modal(client, *, trigger_id: str, channel_id: str, user_id: str, is_bulk_order: bool, initial_text: str) -> None:
         callback_id = "bigorder_request_modal" if is_bulk_order else "purchase_request_modal"
@@ -1112,9 +968,9 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                                 {
                                     "type": "mrkdwn",
                                     "text": (
-                                        "✅ Receipt image(s) provided"
+                                        "✅ Receipt link provided"
                                         if receipt_link
-                                        else "📎 No receipt link yet. Upload receipt image(s) in this thread, then click Confirm."
+                                        else "📎 No receipt link yet. Upload receipt image in channel, then click Confirm."
                                     ),
                                 }
                             ]
@@ -1207,20 +1063,6 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
         except Exception:
             logger.exception("Failed to open /bigorder modal")
 
-    @bolt_app.command("/version")
-    def handle_version_command(ack, body, client):
-        ack()
-
-        channel_id = body.get("channel_id")
-        if not channel_id:
-            return
-
-        client.chat_postEphemeral(
-            channel=channel_id,
-            user=body.get("user_id"),
-            text=f"FEB Purchase Bot latest GitHub commit: *{_get_bot_version()}*",
-        )
-
     @bolt_app.command("/reference")
     def handle_reference_command(ack, body, client):
         ack()
@@ -1254,24 +1096,13 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
 
         def run_reference_lookup() -> None:
             try:
-                subteam_sheet_id = settings.subteam_sheet_ids.get(prefix)
-                if not subteam_sheet_id:
-                    client.chat_postEphemeral(
-                        channel=channel_id,
-                        user=user_id,
-                        text=(
-                            f"No separate budget sheet is configured for *{prefix}* yet. "
-                            "Please ask an administrator to add its spreadsheet ID."
-                        ),
-                    )
-                    return
-
-                sheet_url = sheets.get_spreadsheet_url(spreadsheet_id=subteam_sheet_id)
-                dm_text = (
-                    f"*{prefix} budget sheet*\n"
-                    f"<{sheet_url}|Open the {prefix} budget sheet>\n\n"
-                    "This separate sheet is view-only and reflects updates from the master budget sheet."
-                )
+                lines = sheets.get_budget_lines(tab_name=tab_name, force_refresh=True)
+                rows = [
+                    (line.reference_id, line.item_name or "(no item name)")
+                    for line in lines
+                    if line.reference_id
+                ]
+                dm_text = format_reference_lookup_dm(prefix=prefix, tab_name=tab_name, rows=rows)
 
                 client.chat_postMessage(
                     channel=user_id,
@@ -1284,7 +1115,7 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                 client.chat_postEphemeral(
                     channel=channel_id,
                     user=user_id,
-                    text=f"Sent you the *{prefix}* budget sheet link.",
+                    text=f"Sent you a DM with the *{prefix}* reference list.",
                 )
             except WorksheetNotFound:
                 client.chat_postEphemeral(
@@ -1310,16 +1141,11 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
     def handle_bigorder_request_modal(ack, body, client):
         _handle_purchase_modal_submission(ack, body, client, is_bulk_order=True)
 
-    def _build_tutorial_blocks(
-        owner_id: str,
-        selected: str,
-        created_at: float | None = None,
-    ) -> list[dict[str, Any]]:
+    def _build_tutorial_blocks(owner_id: str, selected: str) -> list[dict[str, Any]]:
             selected_mode = selected if selected in {"purchase", "bigorder"} else "purchase"
-            payload_base = {"owner_id": owner_id, "created_at": created_at}
-            purchase_value = json.dumps({**payload_base, "selected": "purchase"})
-            bigorder_value = json.dumps({**payload_base, "selected": "bigorder"})
-            delete_value = json.dumps(payload_base)
+            purchase_value = json.dumps({"owner_id": owner_id, "selected": "purchase"})
+            bigorder_value = json.dumps({"owner_id": owner_id, "selected": "bigorder"})
+            delete_value = json.dumps({"owner_id": owner_id})
 
             if selected_mode == "purchase":
                 guide_title = "Help: /purchase"
@@ -1328,7 +1154,7 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                     "1. Run `/purchase` to open the request form\n"
                     "2. Enter `reference_id, amount, reason`\n"
                     "3. Click *Review* to post your draft details\n"
-                    "4. Upload your receipt image in the request thread\n"
+                    "4. Upload your receipt image in the channel\n"
                     "5. Click *Confirm*"
                 )
                 examples_text = (
@@ -1345,7 +1171,7 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                     "1. Run `/bigorder` to open the request form\n"
                     "2. Enter one item per line\n"
                     "3. Click *Review* to post your draft details\n"
-                    "4. Upload your receipt image(s) in the request thread\n"
+                    "4. Upload your receipt image in the channel\n"
                     "5. Click *Confirm*"
                 )
                 examples_text = (
@@ -1404,7 +1230,7 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                         "type": "mrkdwn",
                         "text": (
                             "*Receipt link tip*\n"
-                            "No link paste needed. Upload all receipt image(s) in the request thread, then click Confirm within 15 minutes of the latest upload."
+                            "No link paste needed. Upload receipt after the draft appears, then click Confirm."
                         ),
                     },
                 },
@@ -1446,7 +1272,7 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
         if not requester_id or not channel_id:
             return
 
-        blocks = _build_tutorial_blocks(requester_id, "purchase", time.time())
+        blocks = _build_tutorial_blocks(requester_id, "purchase")
 
         client.chat_postMessage(
             channel=channel_id,
@@ -1483,8 +1309,7 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
             )
             return
 
-        created_at = payload.get("created_at")
-        blocks = _build_tutorial_blocks(owner_id, selected, created_at)
+        blocks = _build_tutorial_blocks(owner_id, selected)
 
         try:
             client.chat_update(
@@ -1523,12 +1348,11 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
             return
 
         owner_id = payload.get("owner_id") if isinstance(payload, dict) else None
-        created_at = payload.get("created_at") if isinstance(payload, dict) else None
-        if owner_id and not _tutorial_delete_is_allowed(actor_id, owner_id, created_at):
+        if owner_id and actor_id != owner_id:
             client.chat_postEphemeral(
                 channel=channel_id,
                 user=actor_id,
-                text=f"Only <@{owner_id}> can delete this tutorial for the first 3 minutes.",
+                text=f"Only <@{owner_id}> can delete this tutorial.",
             )
             return
 
@@ -1615,9 +1439,9 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                     )
                     return
 
-                bank_before = sheets.get_bank_balance()
+                bank_before = sheets.get_bank_available()
                 bank_after = bank_before - float(reimbursement_result.amount_reimbursed)
-                bank_updated = sheets.update_bank_balance(bank_after)
+                bank_updated = sheets.update_bank_available(bank_after)
                 if not bank_updated:
                     client.chat_postMessage(
                         channel=channel_id,
@@ -1740,7 +1564,9 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                     "is_unaccounted": is_unaccounted,
                 }
             ]
-        receipt_links = _normalize_receipt_links(confirmation_data)
+        receipt_links = confirmation_data.get("receipt_links") or []
+        if not isinstance(receipt_links, list):
+            receipt_links = []
         receipt_download_urls: list[str] = []
 
         # Get the confirmation message timestamp from the action body (the message containing the button)
@@ -1764,15 +1590,14 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                 text="⏳ Your purchase request is already being processed. Please wait for the manager's response."
             )
             return
-
         if not receipt_links:
-            auto_download_urls, auto_links_ts = _find_recent_receipt_download_urls_for_user(
+            auto_download_urls, _ = _find_receipt_download_urls_for_thread(
                 client,
                 channel_id,
                 user_id,
                 thread_ts=original_message_ts,
             )
-            if auto_download_urls and _is_recent_slack_message_ts(auto_links_ts, RECEIPT_AUTO_LOOKBACK_SECONDS):
+            if auto_download_urls:
                 receipt_download_urls = auto_download_urls
                 receipt_links = auto_download_urls
                 confirmation_data["receipt_links"] = auto_download_urls
@@ -1780,9 +1605,11 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                 client.chat_postMessage(
                     channel=channel_id,
                     thread_ts=original_message_ts,
-                    text="Please send your receipt image(s) in this request thread, then click Confirm again.",
+                    text="Please attach one or more receipt images in this request thread, then click Confirm again.",
                 )
                 return
+        else:
+            receipt_download_urls = [link for link in receipt_links if isinstance(link, str)]
 
         PENDING_CONFIRMATIONS.add(confirmation_key)
 
@@ -1852,11 +1679,7 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                         client.chat_postMessage(
                             channel=channel_id,
                             thread_ts=original_message_ts,
-                            text=(
-                                "⚠️ I could not archive the receipt images to Google Drive, "
-                                "so this request was not submitted. Check that the receipts folder "
-                                "is in a Shared Drive and that the bot has upload access, then try again."
-                            ),
+                            text="I could not combine the receipt images into a PDF, so the request was not submitted. Please try again.",
                         )
                         return
 
@@ -1899,12 +1722,9 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                     client.chat_postMessage(
                         channel=settings.manager_channel_id,
                         thread_ts=manager_msg_ts,
-                        text=f"Receipt for {request_id}:",
+                        text=f"Receipt images for {request_id}:",
                         attachments=[
-                            {
-                                "fallback": f"Receipt image {index}",
-                                "image_url": link,
-                            }
+                            {"fallback": f"Receipt image {index}", "image_url": link}
                             for index, link in enumerate(receipt_links, start=1)
                         ],
                     )
@@ -1919,10 +1739,10 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
 
                 submitted_at_utc = datetime.now(timezone.utc).isoformat()
                 try:
-                    purchasing_power_before = sheets.get_purchasing_power()
+                    bank_available_before = sheets.get_bank_available()
                 except Exception as e:
-                    logger.warning("Failed to read purchasing power: %s", e)
-                    purchasing_power_before = None
+                    logger.warning("Failed to read bank_available: %s", e)
+                    bank_available_before = None
 
                 for bundle_item in manager_bundle_items:
                     report = bundle_item["report"]
@@ -1939,8 +1759,8 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                         amount_usd=float(raw_item["requested_amount"]),
                         is_unaccounted=bool(raw_item.get("is_unaccounted", False)),
                         subteam_available_before=report.available_budget,
-                        purchasing_power_before=purchasing_power_before,
-                        receipt_link=receipt_drive_link or "\n".join(receipt_links),
+                        bank_available_before=bank_available_before,
+                        receipt_link=receipt_links[0] if receipt_links else "",
                         bot_assessment=_recommendation_header(
                             report,
                             settings.item_budget_reject_threshold_percent_of_estimate,

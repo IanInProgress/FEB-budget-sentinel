@@ -20,9 +20,6 @@ REFERENCE_ID_PREFIX_TO_TAB = {
     "AERO": "Aero",
     "AUTO": "Auto",
     "MANU": "Manufacturing",
-    "BNO": "B&O",
-    "TRAN": "RFS + Transport",
-    "SIMS": "Simulations",
 }
 
 # Match: [REF-ID Item Name], amount, reason  OR  [REF-ID], amount, reason
@@ -60,7 +57,7 @@ def _single_item_usage(command_keyword: str) -> str:
         f"  Example: {command_keyword} ADMIN-001, 50.00, Need for supplies\n"
         "  For unaccounted items: ADMIN-000 Item Name, <amount>, <reason>\n"
         f"  Example: {command_keyword} ADMIN-000 Toilet Paper, 25.00, Need for office\n"
-        "  [After Review, upload receipt image(s) in the request thread and click Confirm within 15 minutes of the latest upload]"
+        "  [After Review, upload receipt image in channel and click Confirm]"
     )
 
 
@@ -75,7 +72,7 @@ def _bulk_order_usage(command_keyword: str) -> str:
         "  EECS-001, 20.00, Connectors\n"
         "  EECS-010, 15.50, Ferrules\n"
         "  EECS-000 New Bin, 12.00, Storage for parts\n"
-        "  [After Review, upload receipt image(s) in the request thread and click Confirm within 15 minutes of the latest upload]"
+        "  [After Review, upload receipt image in channel and click Confirm]"
     )
 
 

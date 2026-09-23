@@ -19,7 +19,7 @@ A Slack-integrated budget management system for Formula Electric Berkeley. Membe
 - **Tab-Level Budget Fallback** — Single available budget value can apply to entire subteam
 
 ### Purchase Request Workflow
-- **Slash-Command Submission** — Run `/purchase` or `/bigorder` to open a request form, then enter request details and upload one or more Slack receipt images
+- **Slash-Command Submission** — Run `/purchase` or `/bigorder` to open a request form, then enter request details and a Slack receipt image link
 - **Interactive Confirmation** — Review budget report and confirm/cancel before posting to managers
 - **Built-in Tutorial** — `/tutorial` command shows usage guide with examples and dismissible button
 
@@ -70,8 +70,6 @@ A Slack-integrated budget management system for Formula Electric Berkeley. Membe
    SLACK_SIGNING_SECRET=your-signing-secret
    MANAGER_CHANNEL_ID=C123ABC456
    GOOGLE_SHEET_ID=your-spreadsheet-id
-   GOOGLE_DRIVE_RECEIPTS_FOLDER_ID=your-receipts-folder-id
-   SUBTEAM_SHEET_IDS_JSON={"MECH":"mech-spreadsheet-id","EECS":"eecs-spreadsheet-id","BNO":"bno-spreadsheet-id","TRAN":"transport-spreadsheet-id","SIMS":"sims-spreadsheet-id"}
    GOOGLE_SERVICE_ACCOUNT_FILE=google-service-account.json
    LOG_LEVEL=INFO
    PORT=3000
@@ -101,59 +99,12 @@ would run duplicate scans.
    SLACK_SIGNING_SECRET
    MANAGER_CHANNEL_ID
    GOOGLE_SHEET_ID
-   GOOGLE_DRIVE_RECEIPTS_FOLDER_ID
-   SUBTEAM_SHEET_IDS_JSON
    GOOGLE_SERVICE_ACCOUNT_JSON
    ```
 
    Set `GOOGLE_SERVICE_ACCOUNT_JSON` to the complete contents of the Google
    service-account JSON key file. Railway stores it as a secret; do not commit
    that key file to GitHub.
-
-   Set `SUBTEAM_SHEET_IDS_JSON` to a JSON object mapping each reference prefix to
-   its separate view spreadsheet ID. For example:
-
-   ```json
-   {"MECH":"mech-spreadsheet-id","EECS":"eecs-spreadsheet-id"}
-   ```
-
-### Google Drive Receipt Uploads
-
-The bot accepts multiple receipt images in one Slack message, preserves their
-Slack order, combines them into one PDF named like `REQ-000123_receipts.pdf`,
-and uploads that PDF directly to the folder returned by
-`get_receipts_upload_folder_id()` in `receipts.py`. The resulting private Drive link is sent
-to managers and stored in `Purchases_Log`.
-
-To enable uploads:
-
-1. Enable the **Google Drive API** in the Google Cloud project for the service account.
-2. Share the `Receipts` folder with the service-account email as **Editor**.
-3. Edit `get_receipts_upload_folder_id()` in `receipts.py` if you want to change the upload folder. `GOOGLE_DRIVE_RECEIPTS_FOLDER_ID` can also override the code default for deployment.
-4. On Railway, add the same variable alongside `GOOGLE_SERVICE_ACCOUNT_JSON`.
-
-The bot does not make files public. Managers need permission to the receipts
-folder to open the links.
-
-#### Using a Dedicated Google Account for Drive Uploads
-
-The service account used for Sheets cannot upload to personal My Drive because
-service accounts have no storage quota. To upload using a dedicated Gmail
-account, create a Desktop OAuth client in Google Cloud Console, download it as
-`oauth-client.json`, and share the receipts folder with that Gmail account as
-Editor. Then run locally:
-
-```bash
-GOOGLE_DRIVE_OAUTH_CLIENT_FILE=oauth-client.json \
-GOOGLE_DRIVE_OAUTH_TOKEN_FILE=drive-token.json \
-.venv/bin/python authorize_drive.py
-```
-
-Complete the browser consent flow using the dedicated Gmail account. Do not
-commit `oauth-client.json` or `drive-token.json`. On Railway, set
-`GOOGLE_DRIVE_OAUTH_CLIENT_JSON` and `GOOGLE_DRIVE_OAUTH_TOKEN_JSON` to their
-file contents, and leave the file variables unset. Drive uploads prefer the
-OAuth token when configured; Sheets continue using the service account.
 3. Deploy, then open **Settings → Networking** and generate a public domain.
    Confirm `<your-domain>/healthz` returns `{"status":"ok"}`.
 4. In your Slack app configuration, set this same URL everywhere Slack sends a
@@ -190,20 +141,7 @@ Each subteam should have its own worksheet/tab in the spreadsheet with the follo
 
 The bot automatically creates a `_Config` tab with:
 - **request_counter**: Auto-incrementing counter for unique request IDs
-- **reimbursement_counter**: Auto-incrementing counter for reimbursement IDs
-- **purchasing_power**: Amount still available for approved purchases; reduced when purchases are approved
-- **bank_balance**: Actual bank-account balance; reduced only when reimbursements are completed
-
-For a fresh setup, initialize these values manually:
-
-```text
-request_counter             0
-reimbursement_counter       0
-purchasing_power             40000
-bank_balance                40000
-```
-
-Existing `_Config` tabs using `bank_available` remain readable as a temporary compatibility fallback. New installations should use the explicit keys above.
+- **bank_available**: Club-wide funds balance (updated on approvals)
 
 #### Purchases_Log Tab (Auto-Created)
 
@@ -231,9 +169,8 @@ The bot uses the following reference ID prefixes to identify subteams:
 
 - `/purchase`: Open a single-item request form
 - `/bigorder`: Open a multi-item request form
-- `/version`: Show the bot version based on the repository commit count
 - `/tutorial`: Show in-Slack usage instructions
-- `/reference`: DM yourself a view link to the separate subteam budget spreadsheet (`/reference MECH`)
+- `/reference`: DM yourself a subteam reference table (`/reference MECH`)
 - `/reimburse`: Move approved spend from pending to actual (manager workflow)
 
 ## Usage
@@ -243,13 +180,6 @@ The bot uses the following reference ID prefixes to identify subteams:
 0. **View Tutorial (Optional)**
    - Run `/tutorial` in any channel
    - The bot posts a guide message with a **Delete tutorial** button
-
-### Subteam Budget Links
-
-Run `/reference <subteam_prefix>` to receive a direct link to that subteam's tab in
-the master budget spreadsheet. The master spreadsheet should be shared with users
-as **Viewer** if the link must be view-only. Google Sheets permissions apply to the
-workbook, while the link opens directly on the requested subteam tab.
 
 0. **View Reimburse Command (Treasurers Only)**
    - Run `/reimburse` in any channel to process reimbursements
@@ -277,7 +207,7 @@ workbook, while the link opens directly on the requested subteam tab.
 
 3. **Upload Receipt and Confirm**
 
-   Upload all receipt images together in one channel message after the draft appears, then click **Confirm** on the draft thread prompt. The bot forwards every image to the manager thread and stores the links together in the purchase log.
+   Upload your receipt image in the channel after the draft appears, then click **Confirm** on the draft thread prompt.
 
    **Single-item format:**
    ```

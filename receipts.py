@@ -18,7 +18,6 @@ DRIVE_SCOPES = ["https://www.googleapis.com/auth/drive"]
 
 
 def get_receipts_upload_folder_id() -> str:
-    """Return the single Drive folder that receives all receipt PDFs."""
     return "1NV1_4CdbSGxh7eqFzHhdWAFXQ0N-NLyU"
 
 
@@ -34,14 +33,13 @@ def build_receipt_pdf(image_payloads: list[bytes]) -> bytes:
     try:
         for payload in image_payloads:
             with Image.open(io.BytesIO(payload)) as source:
-                page = ImageOps.exif_transpose(source).convert("RGB")
-                pages.append(page.copy())
+                pages.append(ImageOps.exif_transpose(source).convert("RGB").copy())
 
         output = io.BytesIO()
         pages[0].save(output, format="PDF", save_all=True, append_images=pages[1:])
         return output.getvalue()
-    except Exception as e:
-        raise ReceiptStorageError("Could not convert receipt images to PDF") from e
+    except Exception as error:
+        raise ReceiptStorageError("Could not convert receipt images to PDF") from error
     finally:
         for page in pages:
             page.close()
@@ -60,8 +58,8 @@ def download_slack_images(image_urls: list[str], slack_bot_token: str) -> list[b
         try:
             with urllib.request.urlopen(request, timeout=30) as response:
                 payloads.append(response.read())
-        except Exception as e:
-            raise ReceiptStorageError("Could not download a receipt image from Slack") from e
+        except Exception as error:
+            raise ReceiptStorageError("Could not download a receipt image from Slack") from error
     return payloads
 
 
@@ -91,41 +89,37 @@ class ReceiptDriveStorage:
                     "Run authorize_drive.py first."
                 )
             elif service_account_file:
-                credentials = Credentials.from_service_account_file(
-                    service_account_file,
-                    scopes=DRIVE_SCOPES,
-                )
+                credentials = Credentials.from_service_account_file(service_account_file, scopes=DRIVE_SCOPES)
             elif service_account_json:
                 credentials = Credentials.from_service_account_info(
-                    json.loads(service_account_json),
-                    scopes=DRIVE_SCOPES,
+                    json.loads(service_account_json), scopes=DRIVE_SCOPES
                 )
             else:
                 raise ReceiptStorageError("Missing Google service-account credentials")
             self._drive = build("drive", "v3", credentials=credentials, cache_discovery=False)
         except ReceiptStorageError:
             raise
-        except Exception as e:
-            raise ReceiptStorageError("Could not initialize Google Drive access") from e
+        except Exception as error:
+            raise ReceiptStorageError("Could not initialize Google Drive access") from error
 
         self._root_folder_id = folder_id
 
     def upload_receipt_pdf(self, *, pdf_bytes: bytes, request_id: str) -> str:
-        file_name = f"{request_id}_receipts.pdf"
-        media = MediaIoBaseUpload(io.BytesIO(pdf_bytes), mimetype="application/pdf", resumable=False)
+        media = MediaIoBaseUpload(
+            io.BytesIO(pdf_bytes), mimetype="application/pdf", resumable=False
+        )
         try:
             created = self._drive.files().create(
-                body={"name": file_name, "parents": [self._root_folder_id]},
+                body={"name": f"{request_id}_receipts.pdf", "parents": [self._root_folder_id]},
                 media_body=media,
                 fields="id,webViewLink",
                 supportsAllDrives=True,
             ).execute()
-        except HttpError as e:
-            if "storageQuotaExceeded" in str(e):
+        except HttpError as error:
+            if "storageQuotaExceeded" in str(error):
                 raise ReceiptStorageError(
-                    "Google Drive rejected the upload because service accounts have no My Drive storage quota. "
-                    "Move the receipts folder into a Shared Drive or configure user OAuth delegation."
-                ) from e
-            raise ReceiptStorageError("Google Drive rejected the receipt PDF upload") from e
+                    "Google Drive rejected the upload because service accounts have no My Drive storage quota."
+                ) from error
+            raise ReceiptStorageError("Google Drive rejected the receipt PDF upload") from error
         file_id = str(created["id"])
         return str(created.get("webViewLink") or f"https://drive.google.com/file/d/{file_id}/view")
