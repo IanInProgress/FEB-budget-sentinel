@@ -1382,15 +1382,6 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
             logger.warning("Invalid delete_tutorial_message payload")
             return
 
-        owner_id = payload.get("owner_id") if isinstance(payload, dict) else None
-        if owner_id and actor_id != owner_id:
-            client.chat_postEphemeral(
-                channel=channel_id,
-                user=actor_id,
-                text=f"Only <@{owner_id}> can delete this tutorial.",
-            )
-            return
-
         try:
             client.chat_delete(channel=channel_id, ts=message_ts)
         except Exception:
