@@ -44,6 +44,9 @@ REJECTION_REASON_TIMEOUT_SECONDS = 600
 REQUEST_ID_PATTERN = re.compile(r"\bREQ-[A-Z0-9]{6,}\b", re.IGNORECASE)
 MANAGER_APPROVE_TOKEN = "✅"
 MANAGER_REJECT_TOKEN = "❌"
+# Slack sends the raw shortcode instead of unicode when clients don't render it inline.
+MANAGER_APPROVE_SHORTCODES = (":white_check_mark:", ":heavy_check_mark:", ":ballot_box_with_check:")
+MANAGER_REJECT_SHORTCODES = (":x:", ":negative_squared_cross_mark:", ":heavy_multiplication_x:")
 MANAGER_DECISION_SCAN_INTERVAL_SECONDS = 30
 MANAGER_DECISION_SCAN_HISTORY_LIMIT = 100
 
@@ -211,6 +214,11 @@ def _parse_manager_decision_text(text: str | None) -> tuple[bool, bool, set[int]
     candidate = (text or "").strip()
     if not candidate:
         return False, False, None
+
+    for shortcode in MANAGER_APPROVE_SHORTCODES:
+        candidate = candidate.replace(shortcode, MANAGER_APPROVE_TOKEN)
+    for shortcode in MANAGER_REJECT_SHORTCODES:
+        candidate = candidate.replace(shortcode, MANAGER_REJECT_TOKEN)
 
     if candidate == MANAGER_REJECT_TOKEN:
         return False, True, None

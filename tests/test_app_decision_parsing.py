@@ -35,7 +35,11 @@ def test_parse_manager_decision_ignores_req_id_digits():
 	assert line_numbers == {1, 2}
 
 
-def test_parse_manager_decision_rejects_aliases_and_prose():
-	assert _parse_manager_decision_text(":white_check_mark:") == (False, False, None)
-	assert _parse_manager_decision_text(":x:") == (False, False, None)
+def test_parse_manager_decision_accepts_shortcode_aliases():
+	assert _parse_manager_decision_text(":white_check_mark:") == (True, False, None)
+	assert _parse_manager_decision_text(":x:") == (False, True, None)
+
+
+def test_parse_manager_decision_rejects_prose():
 	assert _parse_manager_decision_text("Please ✅") == (False, False, None)
+	assert _parse_manager_decision_text("Please :white_check_mark: this") == (False, False, None)
