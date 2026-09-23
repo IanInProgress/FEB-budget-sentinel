@@ -1905,6 +1905,14 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
     @bolt_app.event("message")
     def handle_message_event(ack, event, client):
         ack()
+        logger.info(
+            "message event received: channel=%s thread_ts=%s user=%s bot_id=%s text=%r",
+            event.get("channel"),
+            event.get("thread_ts"),
+            event.get("user"),
+            event.get("bot_id"),
+            (event.get("text") or "")[:200],
+        )
 
         # Ignore bot messages
         if event.get("bot_id"):
@@ -1919,7 +1927,14 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
         
         # Handle thread messages in manager channel
         channel_id = event.get("channel")
-        
+
+        if channel_id != settings.manager_channel_id:
+            logger.info(
+                "message event channel %s does not match configured manager_channel_id %s",
+                channel_id,
+                settings.manager_channel_id,
+            )
+
         # Check if this is a thread in the manager channel
         if channel_id == settings.manager_channel_id:
             # Check for approval/rejection messages
