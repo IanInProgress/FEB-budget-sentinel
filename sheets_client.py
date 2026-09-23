@@ -36,6 +36,29 @@ PURCHASE_LOG_HEADERS = [
     "is_unaccounted",
     "subteam_available_before",
     "subteam_available_after",
+    "purchasing_power_before",
+    "purchasing_power_after",
+    "receipt_link",
+    "rejection_reason",
+    "bot_assessment",
+    "bundle_line_number",
+]
+
+PURCHASE_LOG_HEADERS_BANK_NAMES = [
+    "request_id",
+    "submitted_at_utc",
+    "reviewed_at_utc",
+    "status",
+    "requester_id",
+    "manager_id",
+    "subteam",
+    "reference_id",
+    "item_name",
+    "purchase_reason",
+    "amount_usd",
+    "is_unaccounted",
+    "subteam_available_before",
+    "subteam_available_after",
     "bank_available_before",
     "bank_available_after",
     "receipt_link",
@@ -45,6 +68,29 @@ PURCHASE_LOG_HEADERS = [
 ]
 
 PURCHASE_LOG_HEADERS_LEGACY = [
+    "request_id",
+    "bundle_line_number",
+    "submitted_at_utc",
+    "reviewed_at_utc",
+    "status",
+    "requester_id",
+    "manager_id",
+    "subteam",
+    "reference_id",
+    "item_name",
+    "purchase_reason",
+    "amount_usd",
+    "is_unaccounted",
+    "subteam_available_before",
+    "subteam_available_after",
+    "purchasing_power_before",
+    "purchasing_power_after",
+    "receipt_link",
+    "rejection_reason",
+    "bot_assessment",
+]
+
+PURCHASE_LOG_HEADERS_LEGACY_BANK_NAMES = [
     "request_id",
     "bundle_line_number",
     "submitted_at_utc",
@@ -219,9 +265,9 @@ class SheetsClient:
         """
         Fetch budget lines from a subteam tab.
         Expected columns: A=Reference ID, B=Item Name, C=Estimated Budget,
-        D=Pending Spend, E=Actual Spend, F=Available Budget, G=Total Budget.
+        D=Pending Spend, E=Amount Reimbursed, F=Available Budget, G=Total Budget.
 
-        For budget checks, we treat committed spend as pending + actual.
+        For budget checks, we treat committed spend as pending + amount reimbursed.
         """
         now = time.time()
         cached = self._cache.get(tab_name)
@@ -243,6 +289,8 @@ class SheetsClient:
             values = ws.get_all_values()
         except Exception as e:
             raise SheetsClientError(f"Failed to read tab values: {tab_name}") from e
+
+        self._ensure_amount_reimbursed_header(ws, values, tab_name)
 
         # Some sheets store Available Budget (col F) once per subteam tab rather than per row.
         # If exactly one numeric value exists in col F, use it as fallback for rows without F.
@@ -272,7 +320,7 @@ class SheetsClient:
             item_name = (row[1] if len(row) > 1 else "").strip()
             est_raw = row[2] if len(row) > 2 else ""
             pending_raw = row[3] if len(row) > 3 else ""
-            actual_raw = row[4] if len(row) > 4 else ""
+            reimbursed_raw = row[4] if len(row) > 4 else ""
             available_raw = row[5] if len(row) > 5 else ""
             
             try:
@@ -285,9 +333,9 @@ class SheetsClient:
                 pending_spend = 0.0
 
             try:
-                actual_spend = coerce_money(actual_raw, default=0.0)
+                amount_reimbursed = coerce_money(reimbursed_raw, default=0.0)
             except Exception:
-                actual_spend = 0.0
+                amount_reimbursed = 0.0
             
             try:
                 available_budget = coerce_money(available_raw, default=None)
@@ -297,7 +345,7 @@ class SheetsClient:
             if available_budget is None and tab_available_budget is not None:
                 available_budget = tab_available_budget
 
-            committed_spend = clamp_nonnegative(pending_spend + actual_spend)
+            committed_spend = clamp_nonnegative(pending_spend + amount_reimbursed)
 
             lines.append(
                 BudgetLine(
@@ -313,6 +361,18 @@ class SheetsClient:
         self._cache[tab_name] = CachedTab(fetched_at=now, lines=lines)
         logger.info("Fetched %s budget lines from tab %r", len(lines), tab_name)
         return lines
+
+    @staticmethod
+    def _ensure_amount_reimbursed_header(ws, values: list[list[str]], tab_name: str) -> None:
+        if not values or len(values[0]) <= 4 or values[0][4].strip().lower() != "actual spend":
+            return
+
+        try:
+            ws.update_cell(1, 5, "Amount Reimbursed")
+            values[0][4] = "Amount Reimbursed"
+            logger.info("Renamed column E to Amount Reimbursed in tab %r", tab_name)
+        except Exception as e:
+            logger.warning("Failed to rename column E in tab %r: %s", tab_name, e)
 
     def _ensure_config_tab(self) -> None:
         """
@@ -480,7 +540,14 @@ class SheetsClient:
                     logger.info("Expanded Purchases_Log to %d columns", len(expected_headers))
                 
                 actual_headers = ws.row_values(1)
-                if actual_headers == PURCHASE_LOG_HEADERS_LEGACY:
+                if actual_headers == PURCHASE_LOG_HEADERS_BANK_NAMES:
+                    self._rename_purchases_log_headers_to_purchasing_power(ws)
+                    migrated = True
+                    actual_headers = ws.row_values(1)
+                elif tuple(actual_headers) in {
+                    tuple(PURCHASE_LOG_HEADERS_LEGACY),
+                    tuple(PURCHASE_LOG_HEADERS_LEGACY_BANK_NAMES),
+                }:
                     self._migrate_purchases_log_headers_legacy_to_current(ws)
                     migrated = True
                     actual_headers = ws.row_values(1)
@@ -645,7 +712,10 @@ class SheetsClient:
             return
 
         actual_headers = values[0]
-        if actual_headers != PURCHASE_LOG_HEADERS_LEGACY:
+        if tuple(actual_headers) not in {
+            tuple(PURCHASE_LOG_HEADERS_LEGACY),
+            tuple(PURCHASE_LOG_HEADERS_LEGACY_BANK_NAMES),
+        }:
             return
 
         migrated_values: list[list[str]] = [PURCHASE_LOG_HEADERS]
@@ -662,6 +732,12 @@ class SheetsClient:
         ws.update(values=migrated_values, range_name="A1")
         logger.info("Migrated Purchases_Log header order to current format")
 
+    def _rename_purchases_log_headers_to_purchasing_power(self, ws) -> None:
+        """Rename existing bank snapshot columns without moving any data."""
+        for column_number, header in enumerate(PURCHASE_LOG_HEADERS, start=1):
+            ws.update_cell(1, column_number, header)
+        logger.info("Renamed Purchases_Log bank snapshot headers to purchasing power")
+
     def append_purchase_log(
         self,
         *,
@@ -676,7 +752,7 @@ class SheetsClient:
         amount_usd: float,
         is_unaccounted: bool,
         subteam_available_before: float | None,
-        bank_available_before: float | None,
+        purchasing_power_before: float | None,
         receipt_link: str | None,
         bot_assessment: str,
     ) -> bool:
@@ -707,8 +783,8 @@ class SheetsClient:
             str(bool(is_unaccounted)).lower(),
             subteam_available_before if subteam_available_before is not None else "",
             "",  # subteam_available_after (filled on approval/rejection)
-            bank_available_before if bank_available_before is not None else "",
-            "",  # bank_available_after (filled on approval/rejection)
+            purchasing_power_before if purchasing_power_before is not None else "",
+            "",  # purchasing_power_after (filled on approval/rejection)
             receipt_link or "",
             "",  # rejection_reason
             bot_assessment,
@@ -732,7 +808,7 @@ class SheetsClient:
         manager_id: str,
         bundle_line_number: int | None = None,
         subteam_available_after: float | None = None,
-        bank_available_after: float | None = None,
+        purchasing_power_after: float | None = None,
     ) -> bool:
         """
         Update purchase log row with approval/rejection details.
@@ -775,11 +851,11 @@ class SheetsClient:
                     {"range": f"D{row_num}", "values": [[status]]},
                     {"range": f"F{row_num}", "values": [[manager_id]]},
                 ])
-                # Column N: subteam_available_after, Column P: bank_available_after
+                # Column N: subteam_available_after, Column P: purchasing_power_after
                 if subteam_available_after is not None:
                     batch_data.append({"range": f"N{row_num}", "values": [[subteam_available_after]]})
-                if bank_available_after is not None:
-                    batch_data.append({"range": f"P{row_num}", "values": [[bank_available_after]]})
+                if purchasing_power_after is not None:
+                    batch_data.append({"range": f"P{row_num}", "values": [[purchasing_power_after]]})
             ws.batch_update(batch_data)
             logger.info("Updated purchase log status for %s: %s by %s", request_id, status, manager_id)
             return True
@@ -1023,6 +1099,8 @@ class SheetsClient:
         except Exception as e:
             raise SheetsClientError(f"Failed to read tab values: {tab_name}") from e
 
+        self._ensure_amount_reimbursed_header(ws, values, tab_name)
+
         matched_row = None
         for i, row in enumerate(values[1:], start=2):
             row_ref_id = (row[0] if len(row) > 0 else "").strip()
@@ -1064,7 +1142,7 @@ class SheetsClient:
         amount: float,
     ) -> ReimbursementResult | None:
         """
-        Move reimbursed amount from Pending Spend (D) to Actual Spend (E).
+        Move reimbursed amount from Pending Spend (D) to Amount Reimbursed (E).
         """
         try:
             ws = self._sh.worksheet(tab_name)
@@ -1093,29 +1171,29 @@ class SheetsClient:
             row = values[matched_row - 1]
             item_name = (row[1] if len(row) > 1 else "").strip()
             current_pending = coerce_money(row[3] if len(row) > 3 else "", default=0.0)
-            current_actual = coerce_money(row[4] if len(row) > 4 else "", default=0.0)
+            current_reimbursed = coerce_money(row[4] if len(row) > 4 else "", default=0.0)
         except Exception:
             item_name = ""
             current_pending = 0.0
-            current_actual = 0.0
+            current_reimbursed = 0.0
 
         transfer_amount = clamp_nonnegative(amount)
         new_pending = clamp_nonnegative(current_pending - transfer_amount)
         actual_added = current_pending - new_pending
-        new_actual = clamp_nonnegative(current_actual + actual_added)
+        new_reimbursed = clamp_nonnegative(current_reimbursed + actual_added)
 
         try:
             ws.update_cell(matched_row, 4, new_pending)
-            ws.update_cell(matched_row, 5, new_actual)
+            ws.update_cell(matched_row, 5, new_reimbursed)
             logger.info(
-                "Reimbursed %s for %r in %r: pending %s->%s, actual %s->%s",
+                "Reimbursed %s for %r in %r: pending %s->%s, reimbursed %s->%s",
                 actual_added,
                 reference_id,
                 tab_name,
                 current_pending,
                 new_pending,
-                current_actual,
-                new_actual,
+                current_reimbursed,
+                new_reimbursed,
             )
         except Exception as e:
             raise SheetsClientError(f"Failed to update reimbursement cells in tab {tab_name}") from e
@@ -1129,8 +1207,8 @@ class SheetsClient:
             amount_reimbursed=float(actual_added),
             pending_before=float(current_pending),
             pending_after=float(new_pending),
-            actual_before=float(current_actual),
-            actual_after=float(new_actual),
+            actual_before=float(current_reimbursed),
+            actual_after=float(new_reimbursed),
         )
 
     def append_budget_line(
@@ -1188,7 +1266,7 @@ class SheetsClient:
         new_num = max_num + 1
         new_ref_id = f"{prefix}-{new_num:03d}"
         
-        # Append new row: [ref_id, item_name, estimated_budget, pending_spend, actual_spend]
+        # Append new row: [ref_id, item_name, estimated_budget, pending_spend, amount_reimbursed]
         # Approved unaccounted items start as pending until reimbursement.
         new_row = [new_ref_id, item_name, 0.0, initial_spending, 0.0]
         

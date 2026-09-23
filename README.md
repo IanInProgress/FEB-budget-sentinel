@@ -9,7 +9,7 @@ A Slack-integrated budget management system for Formula Electric Berkeley. Membe
 ### Budget Management
 - **Dual-Level Budget Validation** — Validates purchases against both individual item budgets AND team-wide available budgets
 - **Reference ID Tracking** — Every budget item has a unique ID (e.g., ADMIN-001, EECS-042) for precise tracking
-- **Pending & Actual Spend** — Tracks approved spending (pending) separate from reimbursed spending (actual). Approved purchases stay in pending until `/reimburse` moves them to actual
+- **Pending & Amount Reimbursed** — Tracks approved spending (pending) separate from reimbursed spending. Approved purchases stay in pending until `/reimburse` moves the amount to Amount Reimbursed
 - **Bank Balance Management** — Maintains club-wide available fund balance and updates it during reimbursement
 - **Comprehensive Audit Trail** — 18-column Purchases_Log records every transaction with budget snapshots before/after
 - **Unaccounted Item Support** — Handle off-budget purchases using -000 reference IDs (e.g., ADMIN-000 Office Supplies)
@@ -128,16 +128,16 @@ Each subteam should have its own worksheet/tab in the spreadsheet with the follo
 - **Column B**: Item Name
 - **Column C**: Estimated Budget
 - **Column D**: Pending Spend (auto-updated by bot)
-- **Column E**: Actual Spend (auto-updated by bot on approval)
+- **Column E**: Amount Reimbursed (auto-updated by bot by `/reimburse`)
 - **Column F**: Available Budget (subteam-level budget remaining)
 - **Column G**: Total Budget
 - **Header row at row 1**
 
 **Setting Up Available Budget (Column F)**:
 - Fill ONE cell in Column F (typically row 2) with the formula: `=G2-(SUM(D:D)+SUM(E:E))`
-- This calculates: Total Budget minus all Pending and Actual spending across the entire subteam
+- This calculates: Total Budget minus all Pending and Amount Reimbursed spending across the entire subteam
 - The bot will automatically apply this single value to all items in the tab for subteam-level budget validation
-- **Note**: The bot calculates item-level remaining budgets internally (Estimated - Pending - Actual), you only need to set up the subteam-wide available budget in Column F
+- **Note**: The bot calculates item-level remaining budgets internally (Estimated - Pending - Amount Reimbursed), you only need to set up the subteam-wide available budget in Column F
 
 #### _Config Tab (Auto-Created)
 
@@ -147,7 +147,7 @@ The bot automatically creates a `_Config` tab with:
 
 #### Purchases_Log Tab (Auto-Created)
 
-The bot automatically creates a `Purchases_Log` audit trail with 20 columns tracking all transactions, including bundle line numbers, explicit unaccounted-item status, and budget snapshots before/after each change. Multi-item receipts are stored as multiple rows that share the same `request_id`.
+The bot automatically creates a `Purchases_Log` audit trail with 20 columns tracking all transactions, including bundle line numbers, explicit unaccounted-item status, and budget snapshots before/after each change. Purchasing power is recorded before and after the manager decision; rejected requests have the same value in both columns. Multi-item receipts are stored as multiple rows that share the same `request_id`.
 
 ### Reference ID Prefixes
 
@@ -173,7 +173,7 @@ The bot uses the following reference ID prefixes to identify subteams:
 - `/bigorder`: Open a multi-item request form
 - `/tutorial`: Show in-Slack usage instructions
 - `/reference`: DM yourself a subteam reference table (`/reference MECH`)
-- `/reimburse`: Move approved spend from pending to actual (manager workflow)
+- `/reimburse`: Move approved spend from pending to Amount Reimbursed (manager workflow)
 
 ## Usage
 
@@ -185,7 +185,7 @@ The bot uses the following reference ID prefixes to identify subteams:
 
 0. **View Reimburse Command (Treasurers Only)**
    - Run `/reimburse` in any channel to process reimbursements
-   - This moves approved spending from Pending (Column D) to Actual (Column E)
+   - This moves approved spending from Pending (Column D) to Amount Reimbursed (Column E)
    - Only use after payment/reimbursement is completed
 
 1. **Open the Request Form**
@@ -272,13 +272,13 @@ The bot uses the following reference ID prefixes to identify subteams:
    - Purchases_Log audit trail records complete transaction details
    - Member receives a DM notification with the decision
    - Budget cache refreshes automatically
-   - **Note**: Pending spend moves to Actual spend when treasurer runs `/reimburse` command after payment is complete
+   - **Note**: Pending spend moves to Amount Reimbursed when treasurer runs `/reimburse` after payment is complete
 
 ### Budget Reports
 
 The bot evaluates purchases against two budget levels:
-- **Item Budget** — Individual line item budget (Estimated - Pending - Actual)
-- **Subteam Available Budget** — Team-wide spending limit (Column F = Total - Sum of all Pending - Sum of all Actual)
+- **Item Budget** — Individual line item budget (Estimated - Pending - Amount Reimbursed)
+- **Subteam Available Budget** — Team-wide spending limit (Column F = Total - Sum of all Pending - Sum of all Amount Reimbursed)
 
 Status indicators:
 - **✅ Within Budget** — Purchase fits within both item and subteam budgets
@@ -371,7 +371,7 @@ Google Sheet Updated (if approved)
 Member Gets DM Notification
        ↓
 (Later) Treasurer runs /reimburse
-  - Pending → Actual
+   - Pending → Amount Reimbursed
   - After reimbursement complete
 ```
 

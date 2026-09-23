@@ -368,14 +368,13 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                 approved_total = 0.0
                 rejected_total = 0.0
 
-                bank_before_for_copy = None
-                running_bank_available_for_log = None
+                purchasing_power_before_for_copy = None
+                running_purchasing_power_for_log = None
                 try:
-                    bank_before_for_copy = sheets.get_bank_available()
-                    # Bank cash balance changes on reimbursement, not on approval.
-                    running_bank_available_for_log = bank_before_for_copy
+                    purchasing_power_before_for_copy = sheets.get_bank_available()
+                    running_purchasing_power_for_log = purchasing_power_before_for_copy
                 except Exception as e:
-                    logger.warning("Failed to read bank_available: %s", e)
+                    logger.warning("Failed to read purchasing power: %s", e)
 
                 approved_item_summaries: list[str] = []
                 rejected_item_summaries: list[str] = []
@@ -449,10 +448,10 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                         subteam_available_after = (
                             available_budget_before - amount if available_budget_before is not None else None
                         )
-                        bank_available_after_for_line = None
-                        if running_bank_available_for_log is not None:
-                            running_bank_available_for_log -= amount
-                            bank_available_after_for_line = running_bank_available_for_log
+                        purchasing_power_after_for_line = None
+                        if running_purchasing_power_for_log is not None:
+                            running_purchasing_power_for_log -= amount
+                            purchasing_power_after_for_line = running_purchasing_power_for_log
 
                         sheets.update_purchase_log_status(
                             request_id=request_id,
@@ -461,7 +460,7 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                             reviewed_at_utc=reviewed_at_utc,
                             manager_id=manager_id,
                             subteam_available_after=subteam_available_after,
-                            bank_available_after=bank_available_after_for_line,
+                            purchasing_power_after=purchasing_power_after_for_line,
                         )
                         approved_total += amount
                         approved_item_summaries.append(
@@ -476,7 +475,7 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                             reviewed_at_utc=reviewed_at_utc,
                             manager_id=manager_id,
                             subteam_available_after=subteam_after,
-                            bank_available_after=bank_before_for_copy,
+                            purchasing_power_after=purchasing_power_before_for_copy,
                         )
                         rejected_total += amount
                         rejected_item_summaries.append(
@@ -1532,7 +1531,7 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                     channel=channel_id,
                     text=(
                         f"✅ Reimbursement recorded for `{reference_id}` in *{tab_name}*.\n"
-                        f"Moved {format_usd(float(reimbursement_result.amount_reimbursed))} from *Pending Spend* to *Actual Spend*.\n"
+                        f"Moved {format_usd(float(reimbursement_result.amount_reimbursed))} from *Pending Spend* to *Amount Reimbursed*.\n"
                         f"Bank: {format_usd(float(bank_before))} → {format_usd(float(bank_after))}"
                     ),
                 )
@@ -1799,10 +1798,10 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
 
                 submitted_at_utc = datetime.now(timezone.utc).isoformat()
                 try:
-                    bank_available_before = sheets.get_bank_available()
+                    purchasing_power_before = sheets.get_bank_available()
                 except Exception as e:
-                    logger.warning("Failed to read bank_available: %s", e)
-                    bank_available_before = None
+                    logger.warning("Failed to read purchasing power: %s", e)
+                    purchasing_power_before = None
 
                 for bundle_item in manager_bundle_items:
                     report = bundle_item["report"]
@@ -1819,7 +1818,7 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                         amount_usd=float(raw_item["requested_amount"]),
                         is_unaccounted=bool(raw_item.get("is_unaccounted", False)),
                         subteam_available_before=report.available_budget,
-                        bank_available_before=bank_available_before,
+                        purchasing_power_before=purchasing_power_before,
                         receipt_link=receipt_drive_link or (receipt_links[0] if receipt_links else ""),
                         bot_assessment=_recommendation_header(
                             report,
