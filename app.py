@@ -386,7 +386,11 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                         latest_lines = sheets.get_budget_lines(tab_name=subteam_tab, force_refresh=True)
                         if is_unaccounted:
                             matching_line = next(
-                                (line for line in latest_lines if line.available_budget is not None),
+                                (
+                                    line
+                                    for line in latest_lines
+                                    if line.subteam_available_budget is not None
+                                ),
                                 None,
                             )
                         else:
@@ -398,8 +402,8 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                                 ),
                                 None,
                             )
-                        if matching_line and matching_line.available_budget is not None:
-                            available_budget_before = float(matching_line.available_budget)
+                        if matching_line and matching_line.subteam_available_budget is not None:
+                            available_budget_before = float(matching_line.subteam_available_budget)
                     except Exception:
                         logger.warning(
                             "Could not read available budget before approval for %s in %s",

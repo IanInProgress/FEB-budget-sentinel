@@ -42,6 +42,29 @@ def test_over_budget():
     assert report.remaining_budget == 10.0
 
 
+def test_subteam_budget_comes_from_g2_not_item_available_budget():
+    lines = [
+        BudgetLine(
+            reference_id="ERGO-001",
+            item_name="Master cylinder",
+            estimated_budget=650.0,
+            actual_spending=0.0,
+            available_budget=650.0,
+            subteam_available_budget=3325.03,
+        ),
+    ]
+    report = build_budget_report(
+        subteam="ERGO",
+        reference_id="ERGO-001",
+        item_name="Master cylinder",
+        requested_amount=700.0,
+        lines=lines,
+    )
+    assert report.status == Status.OVER_BUDGET
+    assert report.available_budget == 3325.03
+    assert "within available budget" in report.reason
+
+
 def test_item_not_found():
     lines = [
         BudgetLine(

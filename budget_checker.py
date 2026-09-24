@@ -21,6 +21,7 @@ class BudgetLine:
     estimated_budget: float | None
     actual_spending: float | None
     available_budget: float | None = None
+    subteam_available_budget: float | None = None
     row_number: int | None = None  # 1-based sheet row, if known
 
 
@@ -67,7 +68,7 @@ def find_budget_match(
                     estimated_budget=est,
                     actual_spending=act,
                     remaining_budget=None,
-                    available_budget=line.available_budget,
+                    available_budget=line.subteam_available_budget,
                 )
             
             remaining = est - act
@@ -82,7 +83,7 @@ def find_budget_match(
                 estimated_budget=est,
                 actual_spending=act,
                 remaining_budget=remaining,
-                available_budget=line.available_budget,
+                available_budget=line.subteam_available_budget,
             )
     
     # Not found
@@ -106,8 +107,8 @@ def build_budget_report(
 
     def _subteam_available_budget() -> float | None:
         for line in all_lines:
-            if line.available_budget is not None:
-                return float(line.available_budget)
+            if line.subteam_available_budget is not None:
+                return float(line.subteam_available_budget)
         return None
 
     # Handle unaccounted items (e.g., ADMIN-000)

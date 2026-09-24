@@ -317,7 +317,8 @@ class SheetsClient:
         """
         Fetch budget lines from a subteam tab.
         Expected columns: A=Reference ID, B=Item Name, C=Estimated Budget,
-        D=Pending Spend, E=Amount Reimbursed, F=Available Budget, G=Total Budget.
+        D=Pending Spend, E=Amount Reimbursed, F=item-level Available Budget,
+        G=the shared subteam budget in G2.
 
         For budget checks, we treat committed spend as pending + amount reimbursed.
         """
@@ -344,10 +345,10 @@ class SheetsClient:
 
         self._ensure_amount_reimbursed_header(ws, values, tab_name)
 
-        # Subteam Available Budget lives in a single cell, F2; every row falls back to it.
-        f2_raw = values[1][5] if len(values) > 1 and len(values[1]) > 5 else ""
+        # The shared subteam budget lives in G2; column F remains item-level budget.
+        g2_raw = values[1][6] if len(values) > 1 and len(values[1]) > 6 else ""
         try:
-            tab_available_budget = coerce_money(f2_raw, default=None)
+            tab_available_budget = coerce_money(g2_raw, default=None)
         except Exception:
             tab_available_budget = None
 
@@ -383,9 +384,6 @@ class SheetsClient:
             except Exception:
                 available_budget = None
 
-            if available_budget is None and tab_available_budget is not None:
-                available_budget = tab_available_budget
-
             committed_spend = clamp_nonnegative(pending_spend + amount_reimbursed)
 
             lines.append(
@@ -395,6 +393,7 @@ class SheetsClient:
                     estimated_budget=est,
                     actual_spending=committed_spend,
                     available_budget=available_budget,
+                    subteam_available_budget=tab_available_budget,
                     row_number=i,
                 )
             )

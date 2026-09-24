@@ -129,15 +129,16 @@ Each subteam should have its own worksheet/tab in the spreadsheet with the follo
 - **Column C**: Estimated Budget
 - **Column D**: Pending Spend (auto-updated by bot)
 - **Column E**: Amount Reimbursed (auto-updated by bot by `/reimburse`)
-- **Column F**: Available Budget (subteam-level budget remaining)
-- **Column G**: Total Budget
+- **Column F**: Item-level Available Budget (Estimated Cost minus Pending Spend)
+- **Cell G2**: Shared subteam budget
+- **Column G**: Total Budget and subteam budget summary
 - **Header row at row 1**
 
-**Setting Up Available Budget (Column F)**:
-- Fill ONE cell in Column F (typically row 2) with the formula: `=G2-(SUM(D:D)+SUM(E:E))`
+- **Setting Up the Shared Subteam Budget (G2)**:
+- Store the shared subteam budget in `G2`.
 - This calculates: Total Budget minus all Pending and Amount Reimbursed spending across the entire subteam
-- The bot will automatically apply this single value to all items in the tab for subteam-level budget validation
-- **Note**: The bot calculates item-level remaining budgets internally (Estimated - Pending - Amount Reimbursed), you only need to set up the subteam-wide available budget in Column F
+- The bot uses this value for subteam-level budget validation.
+- **Note**: Column F contains each item’s remaining budget and is used for item-level validation.
 
 #### _Config Tab (Auto-Created)
 
@@ -279,7 +280,7 @@ The bot uses the following reference ID prefixes to identify subteams:
 
 The bot evaluates purchases against two budget levels:
 - **Item Budget** — Individual line item budget (Estimated - Pending - Amount Reimbursed)
-- **Subteam Available Budget** — Team-wide spending limit (Column F = Total - Sum of all Pending - Sum of all Amount Reimbursed)
+- **Subteam Available Budget** — Team-wide spending limit stored in `G2`
 
 Status indicators:
 - **✅ Within Budget** — Purchase fits within both item and subteam budgets
