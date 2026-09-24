@@ -368,16 +368,6 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                 approved_total = 0.0
                 rejected_total = 0.0
 
-                # Club purchasing power (_Config club_purchasing_power) is a bot-maintained running
-                # ledger, decremented by each approved amount and persisted after the loop.
-                purchasing_power_before_for_copy = None
-                running_purchasing_power_for_log = None
-                try:
-                    purchasing_power_before_for_copy = sheets.get_club_purchasing_power()
-                    running_purchasing_power_for_log = purchasing_power_before_for_copy
-                except Exception as e:
-                    logger.warning("Failed to read purchasing power: %s", e)
-
                 approved_item_summaries: list[str] = []
                 rejected_item_summaries: list[str] = []
                 for item in items:
@@ -453,12 +443,7 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                         subteam_purchasing_power_change = (
                             -amount if available_budget_before is not None else None
                         )
-                        purchasing_power_after_for_line = None
-                        club_purchasing_power_change = None
-                        if running_purchasing_power_for_log is not None:
-                            running_purchasing_power_for_log -= amount
-                            purchasing_power_after_for_line = running_purchasing_power_for_log
-                            club_purchasing_power_change = -amount
+                        club_purchasing_power_change = -amount
 
                         sheets.update_purchase_log_status(
                             request_id=request_id,
@@ -467,7 +452,6 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                             reviewed_at_utc=reviewed_at_utc,
                             manager_id=manager_id,
                             subteam_available_after=subteam_available_after,
-                            purchasing_power_after=purchasing_power_after_for_line,
                             subteam_purchasing_power_change=subteam_purchasing_power_change,
                             club_purchasing_power_change=club_purchasing_power_change,
                         )
@@ -484,28 +468,14 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                             reviewed_at_utc=reviewed_at_utc,
                             manager_id=manager_id,
                             subteam_available_after=subteam_after,
-                            purchasing_power_after=purchasing_power_before_for_copy,
                             subteam_purchasing_power_change=(
                                 0.0 if available_budget_before is not None else None
                             ),
-                            club_purchasing_power_change=(
-                                0.0 if purchasing_power_before_for_copy is not None else None
-                            ),
+                            club_purchasing_power_change=0.0,
                         )
                         rejected_total += amount
                         rejected_item_summaries.append(
                             f"Item {line_number}: {reference_id} | {item_name} | {format_usd(amount)}"
-                        )
-
-                if (
-                    running_purchasing_power_for_log is not None
-                    and running_purchasing_power_for_log != purchasing_power_before_for_copy
-                ):
-                    try:
-                        sheets.update_club_purchasing_power(running_purchasing_power_for_log)
-                    except Exception:
-                        logger.exception(
-                            "Failed to persist updated purchasing power for request %s", request_id
                         )
 
                 if approved_item_summaries and rejected_item_summaries:
@@ -1524,12 +1494,6 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                     )
                     return
 
-                # Club purchasing power (_Config club_purchasing_power) was already decremented by
-                # this amount when the request was approved; reimbursement just pays out
-                # already-committed funds, so read it for the audit log, don't touch it here.
-                bank_before = sheets.get_club_purchasing_power()
-                bank_after = sheets.get_club_purchasing_power()
-
                 completed_at_utc = datetime.now(timezone.utc).isoformat()
                 reimbursement_id = f"RB-{reference_id}-{int(time.time())}"
                 sheets.append_reimbursement_log(
@@ -1544,8 +1508,6 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                     item_name=reimbursement_result.item_name,
                     amount_requested_usd=float(reimbursement_result.amount_requested),
                     amount_reimbursed_usd=float(reimbursement_result.amount_reimbursed),
-                    bank_before=float(bank_before),
-                    bank_after=float(bank_after),
                     notes="",
                 )
 
@@ -1553,8 +1515,7 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                     channel=channel_id,
                     text=(
                         f"✅ Reimbursement recorded for `{reference_id}` in *{tab_name}*.\n"
-                        f"Moved {format_usd(float(reimbursement_result.amount_reimbursed))} from *Pending Spend* to *Amount Reimbursed*.\n"
-                        f"Club Purchasing Power: {format_usd(float(bank_after))} (unchanged by reimbursement)"
+                        f"Moved {format_usd(float(reimbursement_result.amount_reimbursed))} from *Pending Spend* to *Amount Reimbursed*."
                     ),
                 )
             except Exception:
@@ -1843,11 +1804,6 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                 }
 
                 submitted_at_utc = datetime.now(timezone.utc).isoformat()
-                try:
-                    purchasing_power_before = sheets.get_club_purchasing_power()
-                except Exception as e:
-                    logger.warning("Failed to read purchasing power: %s", e)
-                    purchasing_power_before = None
 
                 for bundle_item in manager_bundle_items:
                     report = bundle_item["report"]
@@ -1864,7 +1820,6 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                         amount_usd=float(raw_item["requested_amount"]),
                         is_unaccounted=bool(raw_item.get("is_unaccounted", False)),
                         subteam_available_before=report.available_budget,
-                        purchasing_power_before=purchasing_power_before,
                         receipt_link=receipt_drive_link or (receipt_links[0] if receipt_links else ""),
                         bot_assessment=_recommendation_header(
                             report,

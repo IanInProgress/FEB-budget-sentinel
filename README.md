@@ -143,11 +143,10 @@ Each subteam should have its own worksheet/tab in the spreadsheet with the follo
 
 The bot automatically creates a `_Config` tab with:
 - **request_counter**: Auto-incrementing counter for unique request IDs, managed entirely by the bot
-- **club_purchasing_power**: Club-wide purchasing power, maintained by the bot as a running ledger. Set the initial value to the club's real starting balance; each approved purchase then subtracts its amount automatically. Reimbursing an already-approved purchase does not change it again (the amount was already committed at approval time).
 
 #### Purchases_Log Tab (Auto-Created)
 
-The bot automatically creates a `Purchases_Log` audit trail with 22 columns tracking all transactions, including bundle line numbers, explicit unaccounted-item status, and budget snapshots before/after each change. Purchasing power is recorded before and after the manager decision; rejected requests have the same value in both columns. Two additional columns, `subteam_purchasing_power_change` and `club_purchasing_power_change`, record the actual delta (after − before) applied by the decision — 0 for rejected requests, and the negative of the approved amount for approved requests. Multi-item receipts are stored as multiple rows that share the same `request_id`.
+The bot automatically creates a `Purchases_Log` audit trail with 20 columns tracking all transactions, including bundle line numbers, explicit unaccounted-item status, and subteam budget snapshots before/after each change. Two columns, `subteam_purchasing_power_change` and `club_purchasing_power_change`, record the delta applied by the manager's decision — 0 for rejected requests, and the negative of the approved amount for approved requests. The club's overall purchasing power at any point is `SUM(club_purchasing_power_change)` across all rows (plus the club's starting balance before tracking began) — there's no separately-maintained running total in `_Config`, since that would just duplicate this column. Multi-item receipts are stored as multiple rows that share the same `request_id`.
 
 ### Reference ID Prefixes
 
@@ -268,8 +267,7 @@ The bot uses the following reference ID prefixes to identify subteams:
 4. **Automatic Updates**
    - Approved purchases update the Google Sheet:
      - Column D: Pending Spend → remains (includes all approved purchases)
-     - _Config: club_purchasing_power → deducted by purchase amount
-   - Purchases_Log audit trail records complete transaction details
+   - Purchases_Log audit trail records complete transaction details, including `club_purchasing_power_change` for the approved amount
    - Member receives a DM notification with the decision
    - Budget cache refreshes automatically
    - **Note**: Pending spend moves to Amount Reimbursed when treasurer runs `/reimburse` after payment is complete

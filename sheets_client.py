@@ -46,7 +46,9 @@ PURCHASE_LOG_HEADERS_PRE_POWER_CHANGE_COLS = [
     "bundle_line_number",
 ]
 
-PURCHASE_LOG_HEADERS = [
+# Layout after change columns were added but before the purchasing_power_before/after
+# snapshot columns were removed as redundant with club_purchasing_power_change.
+PURCHASE_LOG_HEADERS_WITH_POWER_SNAPSHOT_COLS = [
     "request_id",
     "submitted_at_utc",
     "reviewed_at_utc",
@@ -67,8 +69,29 @@ PURCHASE_LOG_HEADERS = [
     "rejection_reason",
     "bot_assessment",
     "bundle_line_number",
-    # Appended at the end (rather than inserted) so existing column letters/indices
-    # used elsewhere in this file don't shift.
+    "subteam_purchasing_power_change",
+    "club_purchasing_power_change",
+]
+
+PURCHASE_LOG_HEADERS = [
+    "request_id",
+    "submitted_at_utc",
+    "reviewed_at_utc",
+    "status",
+    "requester_id",
+    "manager_id",
+    "subteam",
+    "reference_id",
+    "item_name",
+    "purchase_reason",
+    "amount_usd",
+    "is_unaccounted",
+    "subteam_available_before",
+    "subteam_available_after",
+    "receipt_link",
+    "rejection_reason",
+    "bot_assessment",
+    "bundle_line_number",
     "subteam_purchasing_power_change",
     "club_purchasing_power_change",
 ]
@@ -203,7 +226,7 @@ def _row_to_purchase_log_entry(row: list[str]) -> PurchaseLogEntry:
     amount_raw = row[10] if len(row) > 10 else ""
     amount = coerce_money(amount_raw, default=0.0)
     try:
-        bundle_line_number = int(row[19]) if len(row) > 19 and row[19] else 0
+        bundle_line_number = int(row[17]) if len(row) > 17 and row[17] else 0
     except ValueError:
         bundle_line_number = 0
     return PurchaseLogEntry(
@@ -218,7 +241,7 @@ def _row_to_purchase_log_entry(row: list[str]) -> PurchaseLogEntry:
         purchase_reason=(row[9] if len(row) > 9 else "").strip(),
         amount_usd=float(amount),
         is_unaccounted=((row[11] if len(row) > 11 else "").strip().lower() == "true"),
-        rejection_reason=(row[17] if len(row) > 17 else "").strip(),
+        rejection_reason=(row[15] if len(row) > 15 else "").strip(),
     )
 
 
@@ -395,7 +418,7 @@ class SheetsClient:
 
     def _ensure_config_tab(self) -> None:
         """
-        Ensure _Config tab exists with request_counter and club_purchasing_power. Create if missing.
+        Ensure _Config tab exists with request_counter. Create if missing.
         """
         try:
             self._sh.worksheet("_Config")
@@ -404,8 +427,7 @@ class SheetsClient:
                 ws = self._sh.add_worksheet(title="_Config", rows=10, cols=2)
                 ws.append_row(["key", "value"])
                 ws.append_row(["request_counter", "0"])
-                ws.append_row(["club_purchasing_power", "0"])
-                logger.info("Created _Config tab with request_counter and club_purchasing_power initialized to 0")
+                logger.info("Created _Config tab with request_counter initialized to 0")
             except Exception as e:
                 logger.error("Failed to create _Config tab: %s", e)
                 raise SheetsClientError("Could not create _Config tab") from e
@@ -470,88 +492,6 @@ class SheetsClient:
 
         raise SheetsClientError("Could not update request counter")
 
-    def get_club_purchasing_power(self) -> float:
-        """
-        Get the current club_purchasing_power from _Config tab.
-        Falls back to the legacy "bank_available" key name if not yet migrated.
-        """
-        self._ensure_config_tab()
-
-        try:
-            ws = self._sh.worksheet("_Config")
-        except WorksheetNotFound as e:
-            raise SheetsClientError("_Config tab not found") from e
-        except Exception as e:
-            raise SheetsClientError("Failed to open _Config tab") from e
-
-        try:
-            values = ws.get_all_values()
-        except Exception as e:
-            raise SheetsClientError("Failed to read _Config tab") from e
-
-        for row in values:
-            if len(row) > 0 and row[0] in ("club_purchasing_power", "bank_available"):
-                try:
-                    raw_value = row[1] if len(row) > 1 else ""
-                    return float(coerce_money(raw_value, default=0.0))
-                except (ValueError, IndexError):
-                    return 0.0
-
-        logger.warning("club_purchasing_power not found in _Config tab, returning 0")
-        return 0.0
-
-    def update_club_purchasing_power(self, new_amount: float) -> bool:
-        """
-        Update club_purchasing_power in _Config tab.
-        Migrates the legacy "bank_available" key name in place if found.
-        Returns True if successful.
-        """
-        self._ensure_config_tab()
-
-        try:
-            ws = self._sh.worksheet("_Config")
-        except WorksheetNotFound as e:
-            raise SheetsClientError("_Config tab not found") from e
-        except Exception as e:
-            raise SheetsClientError("Failed to open _Config tab") from e
-
-        try:
-            values = ws.get_all_values()
-        except Exception as e:
-            raise SheetsClientError("Failed to read _Config tab") from e
-
-        config_row_num = None
-        needs_key_migration = False
-        for i, row in enumerate(values):
-            if len(row) > 0 and row[0] == "club_purchasing_power":
-                config_row_num = i + 1
-                break
-            if len(row) > 0 and row[0] == "bank_available":
-                config_row_num = i + 1
-                needs_key_migration = True
-                break
-
-        if config_row_num is None:
-            logger.warning("club_purchasing_power not found in _Config tab, appending")
-            try:
-                ws.append_row(["club_purchasing_power", new_amount])
-                logger.info("Added club_purchasing_power to _Config: %s", new_amount)
-                return True
-            except Exception as e:
-                logger.error("Failed to append club_purchasing_power: %s", e)
-                return False
-
-        try:
-            if needs_key_migration:
-                ws.update_cell(config_row_num, 1, "club_purchasing_power")
-                logger.info("Migrated _Config key bank_available -> club_purchasing_power")
-            ws.update_cell(config_row_num, 2, new_amount)
-            logger.info("Updated club_purchasing_power in _Config: %s", new_amount)
-            return True
-        except Exception as e:
-            logger.error("Failed to update club_purchasing_power in _Config: %s", e)
-            return False
-
     def _ensure_purchases_log_tab(self) -> str:
         """
         Ensure Purchases_Log tab exists with proper headers. Create if missing.
@@ -582,6 +522,11 @@ class SheetsClient:
 
                 if actual_headers == PURCHASE_LOG_HEADERS_PRE_POWER_CHANGE_COLS:
                     self._add_purchasing_power_change_columns(ws)
+                    migrated = True
+                    actual_headers = ws.row_values(1)
+
+                if actual_headers == PURCHASE_LOG_HEADERS_WITH_POWER_SNAPSHOT_COLS:
+                    self._remove_purchasing_power_snapshot_columns(ws)
                     migrated = True
                     actual_headers = ws.row_values(1)
 
@@ -694,8 +639,8 @@ class SheetsClient:
         item_name: str,
         amount_requested_usd: float,
         amount_reimbursed_usd: float,
-        bank_before: float,
-        bank_after: float,
+        bank_before: float | None = None,
+        bank_after: float | None = None,
         notes: str = "",
     ) -> bool:
         """
@@ -722,8 +667,8 @@ class SheetsClient:
             item_name,
             amount_requested_usd,
             amount_reimbursed_usd,
-            bank_before,
-            bank_after,
+            bank_before if bank_before is not None else "",
+            bank_after if bank_after is not None else "",
             notes,
         ]
 
@@ -767,17 +712,22 @@ class SheetsClient:
 
     def _rename_purchases_log_headers_to_purchasing_power(self, ws) -> None:
         """Rename existing bank snapshot columns without moving any data."""
-        for column_number, header in enumerate(PURCHASE_LOG_HEADERS, start=1):
+        for column_number, header in enumerate(PURCHASE_LOG_HEADERS_PRE_POWER_CHANGE_COLS, start=1):
             ws.update_cell(1, column_number, header)
 
     def _add_purchasing_power_change_columns(self, ws) -> None:
         """Append the two purchasing power change headers without touching existing data."""
-        change_headers = PURCHASE_LOG_HEADERS[len(PURCHASE_LOG_HEADERS_PRE_POWER_CHANGE_COLS):]
+        change_headers = PURCHASE_LOG_HEADERS_WITH_POWER_SNAPSHOT_COLS[len(PURCHASE_LOG_HEADERS_PRE_POWER_CHANGE_COLS):]
         start_column = len(PURCHASE_LOG_HEADERS_PRE_POWER_CHANGE_COLS) + 1
         for offset, header in enumerate(change_headers):
             ws.update_cell(1, start_column + offset, header)
         logger.info("Added purchasing power change columns to Purchases_Log")
-        logger.info("Renamed Purchases_Log bank snapshot headers to purchasing power")
+
+    def _remove_purchasing_power_snapshot_columns(self, ws) -> None:
+        """Delete the redundant purchasing_power_before/after columns (positions 15-16)."""
+        snapshot_start_column = PURCHASE_LOG_HEADERS_PRE_POWER_CHANGE_COLS.index("purchasing_power_before") + 1
+        ws.delete_columns(snapshot_start_column, snapshot_start_column + 1)
+        logger.info("Removed purchasing_power_before/after columns from Purchases_Log")
 
     def append_purchase_log(
         self,
@@ -793,7 +743,6 @@ class SheetsClient:
         amount_usd: float,
         is_unaccounted: bool,
         subteam_available_before: float | None,
-        purchasing_power_before: float | None,
         receipt_link: str | None,
         bot_assessment: str,
     ) -> bool:
@@ -824,8 +773,6 @@ class SheetsClient:
             str(bool(is_unaccounted)).lower(),
             subteam_available_before if subteam_available_before is not None else "",
             "",  # subteam_available_after (filled on approval/rejection)
-            purchasing_power_before if purchasing_power_before is not None else "",
-            "",  # purchasing_power_after (filled on approval/rejection)
             receipt_link or "",
             "",  # rejection_reason
             bot_assessment,
@@ -851,7 +798,6 @@ class SheetsClient:
         manager_id: str,
         bundle_line_number: int | None = None,
         subteam_available_after: float | None = None,
-        purchasing_power_after: float | None = None,
         subteam_purchasing_power_change: float | None = None,
         club_purchasing_power_change: float | None = None,
     ) -> bool:
@@ -875,9 +821,9 @@ class SheetsClient:
         for i, row in enumerate(values[1:], start=2):
             if len(row) > 0 and row[0] == request_id:
                 row_line_number = 0
-                if len(row) > 19:
+                if len(row) > 17:
                     try:
-                        row_line_number = int(row[19])
+                        row_line_number = int(row[17])
                     except ValueError:
                         row_line_number = 0
                 if bundle_line_number is None or row_line_number == bundle_line_number:
@@ -896,16 +842,14 @@ class SheetsClient:
                     {"range": f"D{row_num}", "values": [[status]]},
                     {"range": f"F{row_num}", "values": [[manager_id]]},
                 ])
-                # Column N: subteam_available_after, Column P: purchasing_power_after
+                # Column N: subteam_available_after
                 if subteam_available_after is not None:
                     batch_data.append({"range": f"N{row_num}", "values": [[subteam_available_after]]})
-                if purchasing_power_after is not None:
-                    batch_data.append({"range": f"P{row_num}", "values": [[purchasing_power_after]]})
-                # Column U: subteam_purchasing_power_change, Column V: club_purchasing_power_change
+                # Column S: subteam_purchasing_power_change, Column T: club_purchasing_power_change
                 if subteam_purchasing_power_change is not None:
-                    batch_data.append({"range": f"U{row_num}", "values": [[subteam_purchasing_power_change]]})
+                    batch_data.append({"range": f"S{row_num}", "values": [[subteam_purchasing_power_change]]})
                 if club_purchasing_power_change is not None:
-                    batch_data.append({"range": f"V{row_num}", "values": [[club_purchasing_power_change]]})
+                    batch_data.append({"range": f"T{row_num}", "values": [[club_purchasing_power_change]]})
             ws.batch_update(batch_data)
             logger.info("Updated purchase log status for %s: %s by %s", request_id, status, manager_id)
             return True
@@ -946,8 +890,8 @@ class SheetsClient:
 
         try:
             for row_num in row_nums:
-                # Column R (18): rejection_reason
-                ws.update_cell(row_num, 18, rejection_reason)
+                # Column P (16): rejection_reason
+                ws.update_cell(row_num, 16, rejection_reason)
             logger.info("Updated rejection reason for %s", request_id)
             return True
         except Exception as e:
@@ -987,8 +931,8 @@ class SheetsClient:
 
         try:
             for row_num in row_nums:
-                # Column Q (17): receipt_link
-                ws.update_cell(row_num, 17, receipt_link)
+                # Column O (15): receipt_link
+                ws.update_cell(row_num, 15, receipt_link)
             logger.info("Updated receipt link for %s", request_id)
             return True
         except Exception as e:
@@ -1019,9 +963,9 @@ class SheetsClient:
 
         row_num = None
         for i, row in enumerate(values[1:], start=2):
-            if len(row) > 19 and row[0] == request_id:
+            if len(row) > 17 and row[0] == request_id:
                 try:
-                    row_line_number = int(row[19])
+                    row_line_number = int(row[17])
                 except ValueError:
                     continue
                 if row_line_number == bundle_line_number:
