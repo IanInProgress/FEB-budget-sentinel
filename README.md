@@ -147,7 +147,7 @@ The bot automatically creates a `_Config` tab with:
 
 #### Purchases_Log Tab (Auto-Created)
 
-The bot automatically creates a `Purchases_Log` audit trail with 20 columns tracking all transactions, including bundle line numbers, explicit unaccounted-item status, and budget snapshots before/after each change. Purchasing power is recorded before and after the manager decision; rejected requests have the same value in both columns. Multi-item receipts are stored as multiple rows that share the same `request_id`.
+The bot automatically creates a `Purchases_Log` audit trail with 22 columns tracking all transactions, including bundle line numbers, explicit unaccounted-item status, and budget snapshots before/after each change. Purchasing power is recorded before and after the manager decision; rejected requests have the same value in both columns. Two additional columns, `subteam_purchasing_power_change` and `club_purchasing_power_change`, record the actual delta (after − before) applied by the decision — 0 for rejected requests, and the negative of the approved amount for approved requests. Multi-item receipts are stored as multiple rows that share the same `request_id`.
 
 ### Reference ID Prefixes
 

@@ -21,6 +21,31 @@ REQUEST_COUNTER_INITIAL_BACKOFF_SECONDS = 0.5
 PURCHASE_LOG_READ_MAX_ATTEMPTS = 5
 PURCHASE_LOG_READ_INITIAL_BACKOFF_SECONDS = 0.5
 
+# Previous "current" layout, kept only to detect and migrate sheets that predate the
+# subteam/club purchasing power change columns.
+PURCHASE_LOG_HEADERS_PRE_POWER_CHANGE_COLS = [
+    "request_id",
+    "submitted_at_utc",
+    "reviewed_at_utc",
+    "status",
+    "requester_id",
+    "manager_id",
+    "subteam",
+    "reference_id",
+    "item_name",
+    "purchase_reason",
+    "amount_usd",
+    "is_unaccounted",
+    "subteam_available_before",
+    "subteam_available_after",
+    "purchasing_power_before",
+    "purchasing_power_after",
+    "receipt_link",
+    "rejection_reason",
+    "bot_assessment",
+    "bundle_line_number",
+]
+
 PURCHASE_LOG_HEADERS = [
     "request_id",
     "submitted_at_utc",
@@ -42,6 +67,10 @@ PURCHASE_LOG_HEADERS = [
     "rejection_reason",
     "bot_assessment",
     "bundle_line_number",
+    # Appended at the end (rather than inserted) so existing column letters/indices
+    # used elsewhere in this file don't shift.
+    "subteam_purchasing_power_change",
+    "club_purchasing_power_change",
 ]
 
 PURCHASE_LOG_HEADERS_BANK_NAMES = [
@@ -542,6 +571,11 @@ class SheetsClient:
                     migrated = True
                     actual_headers = ws.row_values(1)
 
+                if actual_headers == PURCHASE_LOG_HEADERS_PRE_POWER_CHANGE_COLS:
+                    self._add_purchasing_power_change_columns(ws)
+                    migrated = True
+                    actual_headers = ws.row_values(1)
+
                 if actual_headers != expected_headers:
                     values = ws.get_all_values()
                     has_data = len(values) > 1
@@ -726,6 +760,14 @@ class SheetsClient:
         """Rename existing bank snapshot columns without moving any data."""
         for column_number, header in enumerate(PURCHASE_LOG_HEADERS, start=1):
             ws.update_cell(1, column_number, header)
+
+    def _add_purchasing_power_change_columns(self, ws) -> None:
+        """Append the two purchasing power change headers without touching existing data."""
+        change_headers = PURCHASE_LOG_HEADERS[len(PURCHASE_LOG_HEADERS_PRE_POWER_CHANGE_COLS):]
+        start_column = len(PURCHASE_LOG_HEADERS_PRE_POWER_CHANGE_COLS) + 1
+        for offset, header in enumerate(change_headers):
+            ws.update_cell(1, start_column + offset, header)
+        logger.info("Added purchasing power change columns to Purchases_Log")
         logger.info("Renamed Purchases_Log bank snapshot headers to purchasing power")
 
     def append_purchase_log(
@@ -779,6 +821,8 @@ class SheetsClient:
             "",  # rejection_reason
             bot_assessment,
             bundle_line_number,
+            "",  # subteam_purchasing_power_change (filled on approval/rejection)
+            "",  # club_purchasing_power_change (filled on approval/rejection)
         ]
 
         try:
@@ -799,6 +843,8 @@ class SheetsClient:
         bundle_line_number: int | None = None,
         subteam_available_after: float | None = None,
         purchasing_power_after: float | None = None,
+        subteam_purchasing_power_change: float | None = None,
+        club_purchasing_power_change: float | None = None,
     ) -> bool:
         """
         Update purchase log row with approval/rejection details.
@@ -846,6 +892,11 @@ class SheetsClient:
                     batch_data.append({"range": f"N{row_num}", "values": [[subteam_available_after]]})
                 if purchasing_power_after is not None:
                     batch_data.append({"range": f"P{row_num}", "values": [[purchasing_power_after]]})
+                # Column U: subteam_purchasing_power_change, Column V: club_purchasing_power_change
+                if subteam_purchasing_power_change is not None:
+                    batch_data.append({"range": f"U{row_num}", "values": [[subteam_purchasing_power_change]]})
+                if club_purchasing_power_change is not None:
+                    batch_data.append({"range": f"V{row_num}", "values": [[club_purchasing_power_change]]})
             ws.batch_update(batch_data)
             logger.info("Updated purchase log status for %s: %s by %s", request_id, status, manager_id)
             return True

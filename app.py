@@ -448,10 +448,15 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                         subteam_available_after = (
                             available_budget_before - amount if available_budget_before is not None else None
                         )
+                        subteam_purchasing_power_change = (
+                            -amount if available_budget_before is not None else None
+                        )
                         purchasing_power_after_for_line = None
+                        club_purchasing_power_change = None
                         if running_purchasing_power_for_log is not None:
                             running_purchasing_power_for_log -= amount
                             purchasing_power_after_for_line = running_purchasing_power_for_log
+                            club_purchasing_power_change = -amount
 
                         sheets.update_purchase_log_status(
                             request_id=request_id,
@@ -461,6 +466,8 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                             manager_id=manager_id,
                             subteam_available_after=subteam_available_after,
                             purchasing_power_after=purchasing_power_after_for_line,
+                            subteam_purchasing_power_change=subteam_purchasing_power_change,
+                            club_purchasing_power_change=club_purchasing_power_change,
                         )
                         approved_total += amount
                         approved_item_summaries.append(
@@ -476,10 +483,27 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                             manager_id=manager_id,
                             subteam_available_after=subteam_after,
                             purchasing_power_after=purchasing_power_before_for_copy,
+                            subteam_purchasing_power_change=(
+                                0.0 if available_budget_before is not None else None
+                            ),
+                            club_purchasing_power_change=(
+                                0.0 if purchasing_power_before_for_copy is not None else None
+                            ),
                         )
                         rejected_total += amount
                         rejected_item_summaries.append(
                             f"Item {line_number}: {reference_id} | {item_name} | {format_usd(amount)}"
+                        )
+
+                if (
+                    running_purchasing_power_for_log is not None
+                    and running_purchasing_power_for_log != purchasing_power_before_for_copy
+                ):
+                    try:
+                        sheets.update_bank_available(running_purchasing_power_for_log)
+                    except Exception:
+                        logger.exception(
+                            "Failed to persist updated purchasing power for request %s", request_id
                         )
 
                 if approved_item_summaries and rejected_item_summaries:
