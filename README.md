@@ -142,8 +142,8 @@ Each subteam should have its own worksheet/tab in the spreadsheet with the follo
 #### _Config Tab (Auto-Created)
 
 The bot automatically creates a `_Config` tab with:
-- **request_counter**: Auto-incrementing counter for unique request IDs
-- **bank_available**: Club-wide funds balance (updated on approvals)
+- **request_counter**: Auto-incrementing counter for unique request IDs, managed entirely by the bot
+- **club_purchasing_power**: Club-wide purchasing power, maintained by the bot as a running ledger. Set the initial value to the club's real starting balance; each approved purchase then subtracts its amount automatically. Reimbursing an already-approved purchase does not change it again (the amount was already committed at approval time).
 
 #### Purchases_Log Tab (Auto-Created)
 
@@ -268,7 +268,7 @@ The bot uses the following reference ID prefixes to identify subteams:
 4. **Automatic Updates**
    - Approved purchases update the Google Sheet:
      - Column D: Pending Spend → remains (includes all approved purchases)
-     - _Config: bank_available → deducted by purchase amount
+     - _Config: club_purchasing_power → deducted by purchase amount
    - Purchases_Log audit trail records complete transaction details
    - Member receives a DM notification with the decision
    - Budget cache refreshes automatically

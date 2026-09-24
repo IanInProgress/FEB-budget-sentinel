@@ -395,7 +395,7 @@ class SheetsClient:
 
     def _ensure_config_tab(self) -> None:
         """
-        Ensure _Config tab exists with request_counter and bank_available. Create if missing.
+        Ensure _Config tab exists with request_counter and club_purchasing_power. Create if missing.
         """
         try:
             self._sh.worksheet("_Config")
@@ -404,8 +404,8 @@ class SheetsClient:
                 ws = self._sh.add_worksheet(title="_Config", rows=10, cols=2)
                 ws.append_row(["key", "value"])
                 ws.append_row(["request_counter", "0"])
-                ws.append_row(["bank_available", "0"])
-                logger.info("Created _Config tab with request_counter and bank_available initialized to 0")
+                ws.append_row(["club_purchasing_power", "0"])
+                logger.info("Created _Config tab with request_counter and club_purchasing_power initialized to 0")
             except Exception as e:
                 logger.error("Failed to create _Config tab: %s", e)
                 raise SheetsClientError("Could not create _Config tab") from e
@@ -470,10 +470,10 @@ class SheetsClient:
 
         raise SheetsClientError("Could not update request counter")
 
-    def get_bank_available(self) -> float:
+    def get_club_purchasing_power(self) -> float:
         """
-        Get the current bank_available from _Config tab.
-        Returns the bank balance.
+        Get the current club_purchasing_power from _Config tab.
+        Falls back to the legacy "bank_available" key name if not yet migrated.
         """
         self._ensure_config_tab()
 
@@ -490,19 +490,20 @@ class SheetsClient:
             raise SheetsClientError("Failed to read _Config tab") from e
 
         for row in values:
-            if len(row) > 0 and row[0] == "bank_available":
+            if len(row) > 0 and row[0] in ("club_purchasing_power", "bank_available"):
                 try:
                     raw_value = row[1] if len(row) > 1 else ""
                     return float(coerce_money(raw_value, default=0.0))
                 except (ValueError, IndexError):
                     return 0.0
 
-        logger.warning("bank_available not found in _Config tab, returning 0")
+        logger.warning("club_purchasing_power not found in _Config tab, returning 0")
         return 0.0
 
-    def update_bank_available(self, new_amount: float) -> bool:
+    def update_club_purchasing_power(self, new_amount: float) -> bool:
         """
-        Update bank_available in _Config tab.
+        Update club_purchasing_power in _Config tab.
+        Migrates the legacy "bank_available" key name in place if found.
         Returns True if successful.
         """
         self._ensure_config_tab()
@@ -520,27 +521,35 @@ class SheetsClient:
             raise SheetsClientError("Failed to read _Config tab") from e
 
         config_row_num = None
+        needs_key_migration = False
         for i, row in enumerate(values):
+            if len(row) > 0 and row[0] == "club_purchasing_power":
+                config_row_num = i + 1
+                break
             if len(row) > 0 and row[0] == "bank_available":
                 config_row_num = i + 1
+                needs_key_migration = True
                 break
 
         if config_row_num is None:
-            logger.warning("bank_available not found in _Config tab, appending")
+            logger.warning("club_purchasing_power not found in _Config tab, appending")
             try:
-                ws.append_row(["bank_available", new_amount])
-                logger.info("Added bank_available to _Config: %s", new_amount)
+                ws.append_row(["club_purchasing_power", new_amount])
+                logger.info("Added club_purchasing_power to _Config: %s", new_amount)
                 return True
             except Exception as e:
-                logger.error("Failed to append bank_available: %s", e)
+                logger.error("Failed to append club_purchasing_power: %s", e)
                 return False
 
         try:
+            if needs_key_migration:
+                ws.update_cell(config_row_num, 1, "club_purchasing_power")
+                logger.info("Migrated _Config key bank_available -> club_purchasing_power")
             ws.update_cell(config_row_num, 2, new_amount)
-            logger.info("Updated bank_available in _Config: %s", new_amount)
+            logger.info("Updated club_purchasing_power in _Config: %s", new_amount)
             return True
         except Exception as e:
-            logger.error("Failed to update bank_available in _Config: %s", e)
+            logger.error("Failed to update club_purchasing_power in _Config: %s", e)
             return False
 
     def _ensure_purchases_log_tab(self) -> str:

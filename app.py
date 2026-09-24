@@ -368,10 +368,12 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                 approved_total = 0.0
                 rejected_total = 0.0
 
+                # Club purchasing power (_Config club_purchasing_power) is a bot-maintained running
+                # ledger, decremented by each approved amount and persisted after the loop.
                 purchasing_power_before_for_copy = None
                 running_purchasing_power_for_log = None
                 try:
-                    purchasing_power_before_for_copy = sheets.get_bank_available()
+                    purchasing_power_before_for_copy = sheets.get_club_purchasing_power()
                     running_purchasing_power_for_log = purchasing_power_before_for_copy
                 except Exception as e:
                     logger.warning("Failed to read purchasing power: %s", e)
@@ -500,7 +502,7 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                     and running_purchasing_power_for_log != purchasing_power_before_for_copy
                 ):
                     try:
-                        sheets.update_bank_available(running_purchasing_power_for_log)
+                        sheets.update_club_purchasing_power(running_purchasing_power_for_log)
                     except Exception:
                         logger.exception(
                             "Failed to persist updated purchasing power for request %s", request_id
@@ -1522,15 +1524,11 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                     )
                     return
 
-                bank_before = sheets.get_bank_available()
-                bank_after = bank_before - float(reimbursement_result.amount_reimbursed)
-                bank_updated = sheets.update_bank_available(bank_after)
-                if not bank_updated:
-                    client.chat_postMessage(
-                        channel=channel_id,
-                        text="❌ Reimbursement updated item spend, but failed to update bank balance. Please check _Config manually.",
-                    )
-                    return
+                # Club purchasing power (_Config club_purchasing_power) was already decremented by
+                # this amount when the request was approved; reimbursement just pays out
+                # already-committed funds, so read it for the audit log, don't touch it here.
+                bank_before = sheets.get_club_purchasing_power()
+                bank_after = sheets.get_club_purchasing_power()
 
                 completed_at_utc = datetime.now(timezone.utc).isoformat()
                 reimbursement_id = f"RB-{reference_id}-{int(time.time())}"
@@ -1556,7 +1554,7 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                     text=(
                         f"✅ Reimbursement recorded for `{reference_id}` in *{tab_name}*.\n"
                         f"Moved {format_usd(float(reimbursement_result.amount_reimbursed))} from *Pending Spend* to *Amount Reimbursed*.\n"
-                        f"Bank: {format_usd(float(bank_before))} → {format_usd(float(bank_after))}"
+                        f"Club Purchasing Power: {format_usd(float(bank_after))} (unchanged by reimbursement)"
                     ),
                 )
             except Exception:
@@ -1846,7 +1844,7 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
 
                 submitted_at_utc = datetime.now(timezone.utc).isoformat()
                 try:
-                    purchasing_power_before = sheets.get_bank_available()
+                    purchasing_power_before = sheets.get_club_purchasing_power()
                 except Exception as e:
                     logger.warning("Failed to read purchasing power: %s", e)
                     purchasing_power_before = None
