@@ -155,7 +155,10 @@ The bot uses the following reference ID prefixes to identify subteams:
 - **ADMIN** → Admin
 - **DYNA** → Dynamics
 - **CHAS** → Chassis
+- **BNO** → B&O
 - **POWER** → Powertrain
+- **TRAN** → RFS + Transport
+- **SIMS** → Simulations
 - **COMP** → Composites
 - **ERGO** → Brakes/Ergo
 - **MECH** → Accumulator MechE
