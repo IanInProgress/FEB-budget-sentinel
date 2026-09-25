@@ -20,11 +20,17 @@ from budget_checker import build_budget_report
 from config import Settings, load_settings
 from formatters import (
     _recommendation_header,
-    format_reference_lookup_dm,
+    format_reference_sheet_link_dm,
+    format_reference_subteam_list_dm,
     format_manager_bundle_notification_blocks,
     format_manager_notification_blocks,
 )
-from parser import REFERENCE_ID_PREFIX_TO_TAB, parse_bulk_purchase_text, parse_purchase_text
+from parser import (
+    REFERENCE_ID_PREFIX_TO_SPREADSHEET_ID,
+    REFERENCE_ID_PREFIX_TO_TAB,
+    parse_bulk_purchase_text,
+    parse_purchase_text,
+)
 from receipts import (
     ReceiptDriveStorage,
     ReceiptStorageError,
@@ -1135,34 +1141,56 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
             return
 
         tokens = raw_text.split()
-        if len(tokens) != 1:
+        if len(tokens) > 1:
             client.chat_postEphemeral(
                 channel=channel_id,
                 user=user_id,
-                text="Usage: `/reference <subteam_prefix>` (example: `/reference MECH`)",
+                text="Usage: `/reference` to list IDs, or `/reference <ID>` (example: `/reference MECH-001`).",
             )
             return
 
-        prefix = tokens[0].upper()
-        tab_name = REFERENCE_ID_PREFIX_TO_TAB.get(prefix)
-        if not tab_name:
-            valid_prefixes = ", ".join(REFERENCE_ID_PREFIX_TO_TAB.keys())
-            client.chat_postEphemeral(
-                channel=channel_id,
-                user=user_id,
-                text=f"Unknown prefix `{prefix}`. Valid prefixes: {valid_prefixes}",
-            )
-            return
+        reference_id = tokens[0].upper() if tokens else None
+        if reference_id:
+            id_match = re.fullmatch(r"([A-Z]+)(?:-[A-Z0-9]+)?", reference_id)
+            prefix = id_match.group(1) if id_match else ""
+            tab_name = REFERENCE_ID_PREFIX_TO_TAB.get(prefix)
+            if not tab_name or prefix not in REFERENCE_ID_PREFIX_TO_SPREADSHEET_ID:
+                valid_prefixes = ", ".join(REFERENCE_ID_PREFIX_TO_SPREADSHEET_ID)
+                client.chat_postEphemeral(
+                    channel=channel_id,
+                    user=user_id,
+                    text=f"Unknown or unconfigured reference ID `{reference_id}`. Valid ID prefixes: {valid_prefixes}",
+                )
+                return
+        else:
+            prefix = None
+            tab_name = None
 
         def run_reference_lookup() -> None:
             try:
-                lines = sheets.get_budget_lines(tab_name=tab_name, force_refresh=True)
-                rows = [
-                    (line.reference_id, line.item_name or "(no item name)")
-                    for line in lines
-                    if line.reference_id
-                ]
-                dm_text = format_reference_lookup_dm(prefix=prefix, tab_name=tab_name, rows=rows)
+                if reference_id is None:
+                    mappings = []
+                    for subteam_prefix, subteam_tab in REFERENCE_ID_PREFIX_TO_TAB.items():
+                        lines = sheets.get_budget_lines(tab_name=subteam_tab, force_refresh=True)
+                        mappings.extend(
+                            (line.reference_id, subteam_tab)
+                            for line in lines
+                            if line.reference_id
+                        )
+                    dm_text = format_reference_subteam_list_dm(mappings=mappings)
+                    confirmation = "Sent you a DM with the reference ID and subteam list."
+                else:
+                    spreadsheet_id = REFERENCE_ID_PREFIX_TO_SPREADSHEET_ID[prefix]
+                    sheet_url = (
+                        f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}/view"
+                        "?usp=sharing"
+                    )
+                    dm_text = format_reference_sheet_link_dm(
+                        prefix=prefix,
+                        tab_name=tab_name,
+                        url=sheet_url,
+                    )
+                    confirmation = f"Sent you a DM with the *{reference_id}* subteam spreadsheet link."
 
                 client.chat_postMessage(
                     channel=user_id,
@@ -1175,7 +1203,7 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                 client.chat_postEphemeral(
                     channel=channel_id,
                     user=user_id,
-                    text=f"Sent you a DM with the *{prefix}* reference list.",
+                    text=confirmation,
                 )
             except WorksheetNotFound:
                 client.chat_postEphemeral(
@@ -1184,7 +1212,7 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                     text=f"Could not find the *{tab_name}* tab in Google Sheets.",
                 )
             except Exception:
-                logger.exception("Failed to process /reference for prefix=%s", prefix)
+                logger.exception("Failed to process /reference for ID=%s", reference_id)
                 client.chat_postEphemeral(
                     channel=channel_id,
                     user=user_id,
@@ -1311,7 +1339,7 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                             "- Your request is sent to managers for review\n"
                             "- You receive a DM if approved or rejected\n"
                             "- If approved, amount is added to Pending Spend\n"
-                            "- Need subteam item IDs? Use `/reference <subteam_prefix>` (example: `/reference MECH`)\n"
+                            "- Need reference IDs? Use `/reference`; to open a subteam sheet, use `/reference MECH-001`.\n"
                             "- Use `/reimburse reference_id, amount` when reimbursement is completed"
                         ),
                     },

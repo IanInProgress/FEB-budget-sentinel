@@ -29,6 +29,35 @@ def format_reference_lookup_dm(*, prefix: str, tab_name: str, rows: list[tuple[s
     return f"*Reference list for {prefix} ({tab_name})*\n```\n{table}\n```"
 
 
+def format_reference_subteam_list_dm(*, mappings: list[tuple[str, str]]) -> str:
+    """Build a DM-friendly mapping from reference IDs to subteams."""
+    if not mappings:
+        return "No reference IDs were found in the subteam spreadsheets."
+
+    header_ref = "Reference ID"
+    header_subteam = "Subteam"
+    ref_width = max(len(header_ref), *(len(prefix) for prefix, _ in mappings))
+    subteam_width = max(len(header_subteam), *(len(subteam) for _, subteam in mappings))
+
+    def _line(reference_id: str, subteam: str) -> str:
+        return f"| {reference_id.ljust(ref_width)} | {subteam.ljust(subteam_width)} |"
+
+    divider = f"| {'-' * ref_width} | {'-' * subteam_width} |"
+    table_lines = [_line(header_ref, header_subteam), divider]
+    table_lines.extend(_line(prefix, subteam) for prefix, subteam in mappings)
+    table = "\n".join(table_lines)
+    return (
+        "*Reference IDs and subteams*\n"
+        f"```\n{table}\n```\n"
+        "Run `/reference <ID>` to get the view-only spreadsheet link for that subteam."
+    )
+
+
+def format_reference_sheet_link_dm(*, prefix: str, tab_name: str, url: str) -> str:
+    """Build a DM containing the view-only link for a subteam worksheet."""
+    return f"*{prefix} — {tab_name}*\n<{url}|Open the subteam spreadsheet (view only)>"
+
+
 def _status_prefix(status: Status) -> str:
     if status == Status.WITHIN_BUDGET:
         return "✅"

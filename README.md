@@ -175,8 +175,11 @@ The bot uses the following reference ID prefixes to identify subteams:
 - `/purchase`: Open a single-item request form
 - `/bigorder`: Open a multi-item request form
 - `/tutorial`: Show in-Slack usage instructions
-- `/reference`: DM yourself a subteam reference table (`/reference MECH`)
+- `/reference`: DM yourself the reference ID-to-subteam list
+- `/reference <ID>`: DM yourself a view-only link to that subteam's spreadsheet (example: `/reference MECH-001`; a prefix such as `MECH` also works)
 - `/reimburse`: Move approved spend from pending to Amount Reimbursed (manager workflow)
+
+Each reference prefix maps to its own copied subteam spreadsheet. Google Drive sharing permissions still control access; set each spreadsheet to **Anyone with the link → Viewer** if anyone with the link should be able to view it without editing.
 
 ## Usage
 

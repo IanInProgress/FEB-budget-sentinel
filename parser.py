@@ -25,6 +25,24 @@ REFERENCE_ID_PREFIX_TO_TAB = {
     "MANU": "Manufacturing",
 }
 
+# Published standalone subteam spreadsheets used by the /reference command.
+REFERENCE_ID_PREFIX_TO_SPREADSHEET_ID = {
+    "SIMS": "154Ci21FWA_2eCCKa17A3ASJUzC75nci6AKwQsdSKvGc",
+    "TRAN": "1AdiOUPQwTjeavkYYxxaqKlsoMNDYxMLafngPIAUG5Nc",
+    "POWER": "1U7KJK-2KAj52SdZp-qlLJUPIdoORTjQ5zcz6Iey74EU",
+    "MANU": "1u82aDfkjrZvCtxUyhSKDM7hI-KUNGvWOpn92_qvHh3Y",
+    "EECS": "1YnRsW5ziCin71a2jQqqKW1-4F_s242VbWitlAbfkJyE",
+    "DYNA": "1L7SjtR1RvmiM17HxsfWdoZ3-pcmCSnaN7Co-A6TqDiw",
+    "COMP": "1SBUZjz8c_lJOB8mIUXVYJSsyxbfmZrD1_8ZcuKzf1Bs",
+    "CHAS": "1FMFwzHHR84jdmrzYFAouLnnT3BdDF3f7-fi79jCKLo4",
+    "ERGO": "1zr_TupBRiXqdV5d-W7mHb40kIvQgq9SWHWVZM_bHgMg",
+    "BNO": "1U9Rv0fid8s_HP3DFkk2o478mEDhqAZxh6_LF-sYbGF4",
+    "AUTO": "1ew1-L-yC7kOR2oaHbScDm50rIf18rCOTmD7RwG6KBR8",
+    "AERO": "1SVcnrRdyfITd0HMP62KiyggGwdCdpyAH6dDHo8Jewec",
+    "ADMIN": "1Z7y1sPVjgrh1Hv7p2G0KaLnbVfIGrmkJQsjd-b6t9DY",
+    "MECH": "1fO9CJElk0blio6DnT1a-BrrK2TxvQ7PZu3TWkDiH8wI",
+}
+
 # Match: [REF-ID Item Name], amount, reason  OR  [REF-ID], amount, reason
 _CMD_RE = re.compile(
     r'^\s*(?P<ref_id>[A-Za-z0-9_-]+)(?:\s+(?P<item_name>[^,]+))?\s*,\s*(?P<amount>\$?-?\d+(?:\.\d+)?)\s*,\s*(?P<reason>.+?)\s*$'

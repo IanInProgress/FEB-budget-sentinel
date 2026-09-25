@@ -1,5 +1,10 @@
 from budget_checker import BudgetReport, Status
-from formatters import _recommendation_header, format_reference_lookup_dm
+from formatters import (
+    _recommendation_header,
+    format_reference_lookup_dm,
+    format_reference_sheet_link_dm,
+    format_reference_subteam_list_dm,
+)
 
 
 def _report(
@@ -117,3 +122,25 @@ def test_format_reference_lookup_dm_when_no_rows():
     text = format_reference_lookup_dm(prefix="MANU", tab_name="Manufacturing", rows=[])
 
     assert text == "No reference IDs found for *MANU* (Manufacturing)."
+
+
+def test_format_reference_subteam_list_dm():
+    text = format_reference_subteam_list_dm(
+        mappings=[("MECH-001", "Accumulator MechE"), ("EECS-042", "EECS")]
+    )
+
+    assert "*Reference IDs and subteams*" in text
+    assert "| MECH-001     | Accumulator MechE |" in text
+    assert "| EECS-042     | EECS              |" in text
+    assert "Run `/reference <ID>`" in text
+
+
+def test_format_reference_sheet_link_dm():
+    text = format_reference_sheet_link_dm(
+        prefix="MECH",
+        tab_name="Accumulator MechE",
+        url="https://docs.google.com/spreadsheets/d/example/view?usp=sharing",
+    )
+
+    assert "*MECH — Accumulator MechE*" in text
+    assert "<https://docs.google.com/spreadsheets/d/example/view?usp=sharing|Open the subteam spreadsheet (view only)>" in text

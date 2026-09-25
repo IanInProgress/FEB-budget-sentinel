@@ -1,4 +1,9 @@
-from parser import parse_bulk_purchase_text, parse_purchase_text
+from parser import (
+    REFERENCE_ID_PREFIX_TO_SPREADSHEET_ID,
+    REFERENCE_ID_PREFIX_TO_TAB,
+    parse_bulk_purchase_text,
+    parse_purchase_text,
+)
 from budget_checker import Status
 
 
@@ -77,6 +82,12 @@ def test_parse_valid_all_subteams():
         assert r.ok is True
         assert r.reference_id == ref_id
         assert r.subteam_tab == tab_name
+
+
+def test_every_subteam_has_a_reference_spreadsheet_id():
+    assert set(REFERENCE_ID_PREFIX_TO_SPREADSHEET_ID) == set(REFERENCE_ID_PREFIX_TO_TAB)
+    assert REFERENCE_ID_PREFIX_TO_SPREADSHEET_ID["SIMS"] == "154Ci21FWA_2eCCKa17A3ASJUzC75nci6AKwQsdSKvGc"
+    assert REFERENCE_ID_PREFIX_TO_SPREADSHEET_ID["MECH"] == "1fO9CJElk0blio6DnT1a-BrrK2TxvQ7PZu3TWkDiH8wI"
 
 
 def test_parse_unaccounted_with_item_name():
