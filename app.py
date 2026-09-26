@@ -257,7 +257,7 @@ def _build_deletable_message_blocks(
             "type": "section",
             "text": {
                 "type": "mrkdwn",
-                "text": "*The button below will only remove this bot reply. Please manually delete your original request message above, including any attached receipt image, then resend your request.*",
+                "text": "*The button below will only remove this bot reply. Please manually delete your original request message above, including any attached receipt image or PDF, then resend your request.*",
             },
         },
         {
@@ -711,7 +711,7 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
         *,
         thread_ts: str,
     ) -> tuple[list[str], str | None]:
-        """Return every requester-uploaded image in the request thread."""
+        """Return every requester-uploaded image or PDF in the request thread."""
         try:
             history = client.conversations_replies(channel=channel_id, ts=thread_ts, limit=100)
         except Exception:
@@ -730,7 +730,9 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                     continue
                 mimetype = str(file_obj.get("mimetype") or "").lower()
                 filetype = str(file_obj.get("filetype") or "").lower()
-                if not (mimetype.startswith("image/") or filetype in {"png", "jpg", "jpeg", "gif", "webp", "heic", "heif"}):
+                is_image = mimetype.startswith("image/") or filetype in {"png", "jpg", "jpeg", "gif", "webp", "heic", "heif"}
+                is_pdf = mimetype == "application/pdf" or filetype == "pdf"
+                if not (is_image or is_pdf):
                     continue
                 download_url = file_obj.get("url_private_download") or file_obj.get("url_private")
                 if not isinstance(download_url, str) or not download_url.strip():
@@ -1021,7 +1023,7 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                                     "text": (
                                         "✅ Receipt link provided"
                                         if receipt_link
-                                        else "📎 No receipt link yet. Upload receipt image in channel, then click Confirm."
+                                        else "📎 No receipt link yet. Upload receipt image or PDF in channel, then click Confirm."
                                     ),
                                 }
                             ]
@@ -1235,7 +1237,7 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                     "1. Run `/purchase` to open the request form\n"
                     "2. Enter `reference_id, amount, reason`\n"
                     "3. Click *Review* to post your draft details\n"
-                    "4. Upload your receipt image in the channel\n"
+                    "4. Upload your receipt image(s) or PDF(s) in the channel\n"
                     "5. Click *Confirm*"
                 )
                 examples_text = ""
@@ -1246,7 +1248,7 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                     "1. Run `/bigorder` to open the request form\n"
                     "2. Enter one item per line\n"
                     "3. Click *Review* to post your draft details\n"
-                    "4. Upload your receipt image in the channel\n"
+                    "4. Upload your receipt image(s) or PDF(s) in the channel\n"
                     "5. Click *Confirm*"
                 )
                 examples_text = (
@@ -1319,7 +1321,7 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                         "type": "mrkdwn",
                         "text": (
                             "*Receipt link tip*\n"
-                            "No link paste needed. Upload receipt after the draft appears, then click Confirm."
+                            "No link paste needed. Upload receipt image(s) or PDF(s) after the draft appears, then click Confirm."
                         ),
                     },
                 },
@@ -1672,7 +1674,7 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                 client.chat_postMessage(
                     channel=channel_id,
                     thread_ts=original_message_ts,
-                    text="Please attach one or more receipt images in this request thread, then click Confirm again.",
+                    text="Please attach one or more receipt images or PDFs in this request thread, then click Confirm again.",
                 )
                 return
         else:
@@ -1770,7 +1772,7 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                         client.chat_postMessage(
                             channel=channel_id,
                             thread_ts=original_message_ts,
-                            text="I could not combine the receipt images into a PDF, so the request was not submitted. Please try again.",
+                            text="I could not combine the receipt files into a PDF, so the request was not submitted. Please try again.",
                         )
                         return
 
@@ -1810,14 +1812,14 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                         unfurl_links=True,
                     )
                 else:
+                    receipt_link_lines = "\n".join(
+                        f"{index}. {link}" for index, link in enumerate(receipt_links, start=1)
+                    )
                     client.chat_postMessage(
                         channel=settings.manager_channel_id,
                         thread_ts=manager_msg_ts,
-                        text=f"Receipt images for {request_id}:",
-                        attachments=[
-                            {"fallback": f"Receipt image {index}", "image_url": link}
-                            for index, link in enumerate(receipt_links, start=1)
-                        ],
+                        text=f"Receipt files for {request_id}:\n{receipt_link_lines}",
+                        unfurl_links=True,
                     )
 
                 PENDING_APPROVALS[manager_msg_ts] = {

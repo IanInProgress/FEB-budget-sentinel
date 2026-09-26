@@ -12,6 +12,7 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaIoBaseUpload
 from PIL import Image, ImageOps
+from pypdf import PdfReader, PdfWriter
 
 logger = logging.getLogger(__name__)
 DRIVE_SCOPES = ["https://www.googleapis.com/auth/drive"]
@@ -25,24 +26,45 @@ class ReceiptStorageError(RuntimeError):
     pass
 
 
-def build_receipt_pdf(image_payloads: list[bytes]) -> bytes:
-    if not image_payloads:
-        raise ReceiptStorageError("No receipt images were provided")
+def _is_pdf_payload(payload: bytes) -> bool:
+    return payload.lstrip()[:5] == b"%PDF-"
 
-    pages: list[Image.Image] = []
+
+def build_receipt_pdf(receipt_payloads: list[bytes]) -> bytes:
+    """
+    Combine receipt uploads (images and/or PDFs, in any mix and order) into one PDF.
+    """
+    if not receipt_payloads:
+        raise ReceiptStorageError("No receipt files were provided")
+
+    writer = PdfWriter()
+    opened_images: list[Image.Image] = []
     try:
-        for payload in image_payloads:
+        for payload in receipt_payloads:
+            if _is_pdf_payload(payload):
+                reader = PdfReader(io.BytesIO(payload))
+                for page in reader.pages:
+                    writer.add_page(page)
+                continue
+
             with Image.open(io.BytesIO(payload)) as source:
-                pages.append(ImageOps.exif_transpose(source).convert("RGB").copy())
+                page = ImageOps.exif_transpose(source).convert("RGB").copy()
+            opened_images.append(page)
+
+            page_pdf = io.BytesIO()
+            page.save(page_pdf, format="PDF")
+            page_pdf.seek(0)
+            for page_obj in PdfReader(page_pdf).pages:
+                writer.add_page(page_obj)
 
         output = io.BytesIO()
-        pages[0].save(output, format="PDF", save_all=True, append_images=pages[1:])
+        writer.write(output)
         return output.getvalue()
     except Exception as error:
-        raise ReceiptStorageError("Could not convert receipt images to PDF") from error
+        raise ReceiptStorageError("Could not combine receipt files into a PDF") from error
     finally:
-        for page in pages:
-            page.close()
+        for image in opened_images:
+            image.close()
 
 
 def download_slack_images(image_urls: list[str], slack_bot_token: str) -> list[bytes]:
