@@ -30,26 +30,26 @@ def format_reference_lookup_dm(*, prefix: str, tab_name: str, rows: list[tuple[s
 
 
 def format_reference_subteam_list_dm(*, mappings: list[tuple[str, str]]) -> str:
-    """Build a DM-friendly mapping from reference IDs to subteams."""
+    """Build a DM-friendly mapping from ID prefixes to subteam names."""
     if not mappings:
-        return "No reference IDs were found in the subteam spreadsheets."
+        return "No subteams were found."
 
-    header_ref = "Reference ID"
+    header_prefix = "Prefix"
     header_subteam = "Subteam"
-    ref_width = max(len(header_ref), *(len(prefix) for prefix, _ in mappings))
+    prefix_width = max(len(header_prefix), *(len(prefix) for prefix, _ in mappings))
     subteam_width = max(len(header_subteam), *(len(subteam) for _, subteam in mappings))
 
-    def _line(reference_id: str, subteam: str) -> str:
-        return f"| {reference_id.ljust(ref_width)} | {subteam.ljust(subteam_width)} |"
+    def _line(prefix: str, subteam: str) -> str:
+        return f"| {prefix.ljust(prefix_width)} | {subteam.ljust(subteam_width)} |"
 
-    divider = f"| {'-' * ref_width} | {'-' * subteam_width} |"
-    table_lines = [_line(header_ref, header_subteam), divider]
+    divider = f"| {'-' * prefix_width} | {'-' * subteam_width} |"
+    table_lines = [_line(header_prefix, header_subteam), divider]
     table_lines.extend(_line(prefix, subteam) for prefix, subteam in mappings)
     table = "\n".join(table_lines)
     return (
-        "*Reference IDs and subteams*\n"
+        "*Subteam prefixes*\n"
         f"```\n{table}\n```\n"
-        "Run `/reference <ID>` to get the view-only spreadsheet link for that subteam."
+        "Run `/reference <ID prefix>` (e.g. `/reference MECH`) to get the view-only spreadsheet link for that subteam."
     )
 
 

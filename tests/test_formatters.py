@@ -126,13 +126,13 @@ def test_format_reference_lookup_dm_when_no_rows():
 
 def test_format_reference_subteam_list_dm():
     text = format_reference_subteam_list_dm(
-        mappings=[("MECH-001", "Accumulator MechE"), ("EECS-042", "EECS")]
+        mappings=[("MECH", "Accumulator MechE"), ("EECS", "EECS")]
     )
 
-    assert "*Reference IDs and subteams*" in text
-    assert "| MECH-001     | Accumulator MechE |" in text
-    assert "| EECS-042     | EECS              |" in text
-    assert "Run `/reference <ID>`" in text
+    assert "*Subteam prefixes*" in text
+    assert "| MECH   | Accumulator MechE |" in text
+    assert "| EECS   | EECS              |" in text
+    assert "Run `/reference <ID prefix>`" in text
 
 
 def test_format_reference_sheet_link_dm():

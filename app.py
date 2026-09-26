@@ -1169,14 +1169,7 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
         def run_reference_lookup() -> None:
             try:
                 if reference_id is None:
-                    mappings = []
-                    for subteam_prefix, subteam_tab in REFERENCE_ID_PREFIX_TO_TAB.items():
-                        lines = sheets.get_budget_lines(tab_name=subteam_tab, force_refresh=True)
-                        mappings.extend(
-                            (line.reference_id, subteam_tab)
-                            for line in lines
-                            if line.reference_id
-                        )
+                    mappings = list(REFERENCE_ID_PREFIX_TO_TAB.items())
                     dm_text = format_reference_subteam_list_dm(mappings=mappings)
                     confirmation = "Sent you a DM with the reference ID and subteam list."
                 else:
