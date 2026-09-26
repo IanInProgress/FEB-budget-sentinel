@@ -55,6 +55,30 @@ MANAGER_APPROVE_SHORTCODES = (":white_check_mark:", ":heavy_check_mark:", ":ball
 MANAGER_REJECT_SHORTCODES = (":x:", ":negative_squared_cross_mark:", ":heavy_multiplication_x:")
 MANAGER_DECISION_SCAN_INTERVAL_SECONDS = 30
 MANAGER_DECISION_SCAN_HISTORY_LIMIT = 100
+BNO_ADMIN_USER_ID = "U06J4T27789"
+
+
+def _request_requires_bno_admin_approval(approval_data: dict[str, Any]) -> bool:
+    items = approval_data.get("items") or [approval_data]
+    return any(
+        item.get("is_unaccounted") is True
+        or str(item.get("reference_id") or "").strip().upper().endswith("-000")
+        for item in items
+        if isinstance(item, dict)
+    )
+
+
+def _is_authorized_manager_decision(
+    approval_data: dict[str, Any],
+    *,
+    is_approved: bool,
+    manager_id: str | None,
+) -> bool:
+    return (
+        not is_approved
+        or not _request_requires_bno_admin_approval(approval_data)
+        or manager_id == BNO_ADMIN_USER_ID
+    )
 
 
 def _get_bot_version() -> str:
@@ -345,6 +369,21 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
         thread_ts: str,
     ) -> None:
         if not manager_id:
+            return
+
+        if not _is_authorized_manager_decision(
+            approval_data,
+            is_approved=is_approved,
+            manager_id=manager_id,
+        ):
+            bolt_app.client.chat_postMessage(
+                channel=settings.manager_channel_id,
+                thread_ts=thread_ts,
+                text=(
+                    f"Only <@{BNO_ADMIN_USER_ID}> can approve requests containing `-000` items. "
+                    "This request remains pending."
+                ),
+            )
             return
 
         with decision_inflight_lock:
@@ -676,6 +715,17 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                         "original_channel_id": None,
                         "original_message_ts": None,
                     }
+
+                    if not _is_authorized_manager_decision(
+                        approval_data,
+                        is_approved=recovered_is_approved,
+                        manager_id=recovered_manager_id,
+                    ):
+                        logger.info(
+                            "Ignoring unauthorized approval for restricted request %s",
+                            request_id,
+                        )
+                        continue
 
                     _submit_manager_decision_processing(
                         approval_data=approval_data,
@@ -1795,9 +1845,28 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                         item_budget_reject_threshold_percent_of_estimate=settings.item_budget_reject_threshold_percent_of_estimate,
                     )
 
+                requires_bno_admin_approval = _request_requires_bno_admin_approval({"items": items})
+                manager_notification_text = f"Purchase request {request_id} from <@{user_id}>"
+                if requires_bno_admin_approval:
+                    manager_notification_text += (
+                        f"\n<@{BNO_ADMIN_USER_ID}> this request includes a `-000` item and requires your approval."
+                    )
+                    blocks.append(
+                        {
+                            "type": "section",
+                            "text": {
+                                "type": "mrkdwn",
+                                "text": (
+                                    f"⚠️ <@{BNO_ADMIN_USER_ID}> is the only person who can approve "
+                                    "requests containing `-000` items."
+                                ),
+                            },
+                        }
+                    )
+
                 manager_post = client.chat_postMessage(
                     channel=settings.manager_channel_id,
-                    text=f"Purchase request {request_id} from <@{user_id}>",
+                    text=manager_notification_text,
                     blocks=blocks,
                     unfurl_links=False,
                     unfurl_media=False,
@@ -2045,6 +2114,21 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                         return
 
             if approval_data and (is_approved or is_rejected):
+                if not _is_authorized_manager_decision(
+                    approval_data,
+                    is_approved=is_approved,
+                    manager_id=manager_id,
+                ):
+                    client.chat_postMessage(
+                        channel=settings.manager_channel_id,
+                        thread_ts=thread_ts,
+                        text=(
+                            f"Only <@{BNO_ADMIN_USER_ID}> can approve requests containing `-000` items. "
+                            "This request remains pending."
+                        ),
+                    )
+                    return
+
                 if is_approved and approved_line_numbers is not None:
                     valid_line_numbers = {int(item["line_number"]) for item in approval_data.get("items") or []}
                     invalid_line_numbers = sorted(
