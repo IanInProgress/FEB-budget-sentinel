@@ -1733,6 +1733,9 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
         PENDING_CONFIRMATIONS.add(confirmation_key)
 
         def run() -> None:
+            # Tracks whether the manager has already been notified, so a later failure knows
+            # whether "click Confirm again" would create a duplicate request.
+            request_committed = False
             try:
                 manager_bundle_items: list[dict[str, Any]] = []
                 for item in items:
@@ -1822,7 +1825,10 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                         client.chat_postMessage(
                             channel=channel_id,
                             thread_ts=original_message_ts,
-                            text="I could not combine the receipt files into a PDF, so the request was not submitted. Please try again.",
+                            text=(
+                                "⚠️ Could not upload your receipt to Google Drive, so the request was not submitted. "
+                                "Nothing was sent to the manager yet — just click *Confirm* again to retry."
+                            ),
                         )
                         return
 
@@ -1871,6 +1877,7 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                     unfurl_links=False,
                     unfurl_media=False,
                 )
+                request_committed = True
 
                 manager_msg_ts = manager_post["ts"]
                 if receipt_drive_link:
@@ -1941,12 +1948,25 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
 
             except Exception:
                 logger.exception("Error processing purchase request (user=%s)", user_id)
-                _post_thread_message_with_delete_button(
-                    client=client,
-                    channel_id=channel_id,
-                    thread_ts=original_message_ts,
-                    message_text="An error occurred while processing your request. Please try again.",
-                )
+                if request_committed:
+                    client.chat_postMessage(
+                        channel=channel_id,
+                        thread_ts=original_message_ts,
+                        text=(
+                            "⚠️ An error occurred after your request was sent to the manager channel. "
+                            "It may already be under review — please check the manager channel before resubmitting, "
+                            "or ask a manager to confirm."
+                        ),
+                    )
+                else:
+                    client.chat_postMessage(
+                        channel=channel_id,
+                        thread_ts=original_message_ts,
+                        text=(
+                            "⚠️ An error occurred while processing your request, and it was not submitted. "
+                            "Nothing was sent to the manager — just click *Confirm* again to retry."
+                        ),
+                    )
             finally:
                 PENDING_CONFIRMATIONS.discard(confirmation_key)
 

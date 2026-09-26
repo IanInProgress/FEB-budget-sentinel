@@ -127,21 +127,35 @@ class ReceiptDriveStorage:
         self._root_folder_id = folder_id
 
     def upload_receipt_pdf(self, *, pdf_bytes: bytes, request_id: str) -> str:
-        media = MediaIoBaseUpload(
-            io.BytesIO(pdf_bytes), mimetype="application/pdf", resumable=False
-        )
-        try:
-            created = self._drive.files().create(
-                body={"name": f"{request_id}_receipts.pdf", "parents": [self._root_folder_id]},
-                media_body=media,
-                fields="id,webViewLink",
-                supportsAllDrives=True,
-            ).execute()
-        except HttpError as error:
-            if "storageQuotaExceeded" in str(error):
-                raise ReceiptStorageError(
-                    "Google Drive rejected the upload because service accounts have no My Drive storage quota."
-                ) from error
-            raise ReceiptStorageError("Google Drive rejected the receipt PDF upload") from error
-        file_id = str(created["id"])
-        return str(created.get("webViewLink") or f"https://drive.google.com/file/d/{file_id}/view")
+        # Transient connection drops (e.g. BrokenPipeError) happen occasionally against Google's API;
+        # retry once with a fresh upload before giving up.
+        last_error: Exception | None = None
+        for attempt in range(2):
+            media = MediaIoBaseUpload(
+                io.BytesIO(pdf_bytes), mimetype="application/pdf", resumable=False
+            )
+            try:
+                created = self._drive.files().create(
+                    body={"name": f"{request_id}_receipts.pdf", "parents": [self._root_folder_id]},
+                    media_body=media,
+                    fields="id,webViewLink",
+                    supportsAllDrives=True,
+                ).execute()
+            except HttpError as error:
+                if "storageQuotaExceeded" in str(error):
+                    raise ReceiptStorageError(
+                        "Google Drive rejected the upload because service accounts have no My Drive storage quota."
+                    ) from error
+                raise ReceiptStorageError("Google Drive rejected the receipt PDF upload") from error
+            except (BrokenPipeError, ConnectionError, TimeoutError, OSError) as error:
+                last_error = error
+                logger.warning(
+                    "Transient error uploading receipt PDF for %s (attempt %d): %s",
+                    request_id,
+                    attempt + 1,
+                    error,
+                )
+                continue
+            file_id = str(created["id"])
+            return str(created.get("webViewLink") or f"https://drive.google.com/file/d/{file_id}/view")
+        raise ReceiptStorageError("Could not reach Google Drive to upload the receipt PDF") from last_error
