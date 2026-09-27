@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import json
 import logging
+import time
 import urllib.request
 from pathlib import Path
 
@@ -16,6 +17,9 @@ from pypdf import PdfReader, PdfWriter
 
 logger = logging.getLogger(__name__)
 DRIVE_SCOPES = ["https://www.googleapis.com/auth/drive"]
+RECEIPT_UPLOAD_MAX_ATTEMPTS = 3
+RECEIPT_UPLOAD_INITIAL_BACKOFF_SECONDS = 1.0
+TRANSIENT_DRIVE_HTTP_STATUS_CODES = {429, 500, 502, 503, 504}
 
 
 def get_receipts_upload_folder_id() -> str:
@@ -118,7 +122,8 @@ class ReceiptDriveStorage:
                 )
             else:
                 raise ReceiptStorageError("Missing Google service-account credentials")
-            self._drive = build("drive", "v3", credentials=credentials, cache_discovery=False)
+            self._credentials = credentials
+            self._drive = self._build_drive_client()
         except ReceiptStorageError:
             raise
         except Exception as error:
@@ -126,11 +131,14 @@ class ReceiptDriveStorage:
 
         self._root_folder_id = folder_id
 
+    def _build_drive_client(self):
+        return build("drive", "v3", credentials=self._credentials, cache_discovery=False)
+
     def upload_receipt_pdf(self, *, pdf_bytes: bytes, request_id: str) -> str:
-        # Transient connection drops (e.g. BrokenPipeError) happen occasionally against Google's API;
-        # retry once with a fresh upload before giving up.
+        # Transient connection drops (e.g. BrokenPipeError or SSL EOF) happen against Google's API.
+        # Rebuild the client between attempts so a broken pooled connection is not reused.
         last_error: Exception | None = None
-        for attempt in range(2):
+        for attempt in range(1, RECEIPT_UPLOAD_MAX_ATTEMPTS + 1):
             media = MediaIoBaseUpload(
                 io.BytesIO(pdf_bytes), mimetype="application/pdf", resumable=False
             )
@@ -146,16 +154,32 @@ class ReceiptDriveStorage:
                     raise ReceiptStorageError(
                         "Google Drive rejected the upload because service accounts have no My Drive storage quota."
                     ) from error
-                raise ReceiptStorageError("Google Drive rejected the receipt PDF upload") from error
+                status_code = getattr(getattr(error, "resp", None), "status", None)
+                if status_code not in TRANSIENT_DRIVE_HTTP_STATUS_CODES:
+                    raise ReceiptStorageError("Google Drive rejected the receipt PDF upload") from error
+                last_error = error
             except (BrokenPipeError, ConnectionError, TimeoutError, OSError) as error:
                 last_error = error
-                logger.warning(
-                    "Transient error uploading receipt PDF for %s (attempt %d): %s",
-                    request_id,
-                    attempt + 1,
-                    error,
-                )
-                continue
-            file_id = str(created["id"])
-            return str(created.get("webViewLink") or f"https://drive.google.com/file/d/{file_id}/view")
+            else:
+                file_id = str(created["id"])
+                return str(created.get("webViewLink") or f"https://drive.google.com/file/d/{file_id}/view")
+
+            if attempt == RECEIPT_UPLOAD_MAX_ATTEMPTS:
+                break
+
+            backoff_seconds = RECEIPT_UPLOAD_INITIAL_BACKOFF_SECONDS * (2 ** (attempt - 1))
+            logger.warning(
+                "Transient error uploading receipt PDF for %s (attempt %d/%d): %s; retrying in %.1fs",
+                request_id,
+                attempt,
+                RECEIPT_UPLOAD_MAX_ATTEMPTS,
+                last_error,
+                backoff_seconds,
+            )
+            time.sleep(backoff_seconds)
+            try:
+                self._drive = self._build_drive_client()
+            except Exception as error:
+                raise ReceiptStorageError("Could not reconnect to Google Drive for receipt upload") from error
+
         raise ReceiptStorageError("Could not reach Google Drive to upload the receipt PDF") from last_error

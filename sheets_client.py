@@ -782,7 +782,11 @@ class SheetsClient:
 
         try:
             ws.append_row(row)
-            logger.info("Logged purchase request %s to Purchases_Log", request_id)
+            logger.info(
+                "Logged purchase request %s line %s to Purchases_Log",
+                request_id,
+                bundle_line_number,
+            )
             return True
         except Exception as e:
             logger.error("Failed to append purchase log for %s: %s", request_id, e)
