@@ -27,6 +27,7 @@ A Slack-integrated budget management system for Formula Electric Berkeley. Membe
 
 ### Manager Approval Workflow
 - **Smart Recommendations** — Reports show ✅ RECOMMEND_APPROVE, ❌ RECOMMEND_REJECT, or ⚠️ RECOMMEND_CONSIDER based on budget analysis
+- **Tiered Approval Authority** — Requests totaling $100–$250 require a member of the chief group or the shared president/vice-president group; requests over $250 require the shared president/vice-president group. Bundled requests use their combined total, and these roles control both approval and rejection.
 - **Budget Before/After Display** — Shows exact impact on item budget, subteam budget, and bank balance
 - **Thread-Based Approval** — Managers reply with ✅ or ❌ emoji in thread (receipt image also posted in thread)
 - **Rejection Reasons** — Manager types reason in thread, bot forwards to member via DM
@@ -40,7 +41,7 @@ A Slack-integrated budget management system for Formula Electric Berkeley. Membe
 
 - Python 3.9+
 - Slack workspace with bot permissions:
-   - **OAuth Scopes**: `chat:write`, `chat:write.public`, `commands`, `channels:history`, `groups:history`, `reactions:read`, `reactions:write`, `channels:join`
+   - **OAuth Scopes**: `chat:write`, `chat:write.public`, `commands`, `channels:history`, `groups:history`, `reactions:read`, `reactions:write`, `channels:join`, `usergroups:read`
   - **Event Subscriptions**: `message.channels`, `message.groups`
 - Google Sheets API access with service account
 - Google Sheet with budget data (see Google Sheets Format section below)
@@ -71,6 +72,8 @@ A Slack-integrated budget management system for Formula Electric Berkeley. Membe
    SLACK_BOT_TOKEN=xoxb-your-bot-token
    SLACK_SIGNING_SECRET=your-signing-secret
    MANAGER_CHANNEL_ID=C123ABC456
+   CHIEF_USERGROUP_ID=S0C5ARS1X5L
+   PRESIDENT_VP_USERGROUP_ID=S0C5GGS2DBN
    GOOGLE_SHEET_ID=your-spreadsheet-id
    GOOGLE_SERVICE_ACCOUNT_FILE=google-service-account.json
    LOG_LEVEL=INFO
@@ -100,6 +103,8 @@ would run duplicate scans.
    SLACK_BOT_TOKEN
    SLACK_SIGNING_SECRET
    MANAGER_CHANNEL_ID
+   CHIEF_USERGROUP_ID
+   PRESIDENT_VP_USERGROUP_ID
    GOOGLE_SHEET_ID
    GOOGLE_SERVICE_ACCOUNT_JSON
    ```
@@ -315,6 +320,7 @@ Configure your Slack App at [api.slack.com/apps](https://api.slack.com/apps):
    - `channels:history`
    - `groups:history`
    - `channels:join`
+   - `usergroups:read`
 
 2. **Event Subscriptions** → Enable and subscribe to:
    - `message.channels`

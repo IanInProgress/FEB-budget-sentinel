@@ -55,31 +55,84 @@ MANAGER_APPROVE_SHORTCODES = (":white_check_mark:", ":heavy_check_mark:", ":ball
 MANAGER_REJECT_SHORTCODES = (":x:", ":negative_squared_cross_mark:", ":heavy_multiplication_x:")
 MANAGER_DECISION_SCAN_INTERVAL_SECONDS = 30
 MANAGER_DECISION_SCAN_HISTORY_LIMIT = 100
-BNO_ADMIN_USER_ID = "U06J4T27789"
 SLACK_ACTION_VALUE_MAX_LENGTH = 2000
+USERGROUP_MEMBERS_CACHE_TTL_SECONDS = 300
+CHIEF_APPROVAL_MINIMUM_AMOUNT = 100.0
+PRESIDENT_APPROVAL_MINIMUM_AMOUNT = 250.0
+_USERGROUP_MEMBERS_CACHE: dict[str, tuple[float, set[str]]] = {}
 
 
-def _request_requires_bno_admin_approval(approval_data: dict[str, Any]) -> bool:
+def _get_usergroup_member_ids(client, usergroup_id: str) -> set[str]:
+    cached = _USERGROUP_MEMBERS_CACHE.get(usergroup_id)
+    now = time.time()
+    if cached and now - cached[0] < USERGROUP_MEMBERS_CACHE_TTL_SECONDS:
+        return cached[1]
+
+    try:
+        response = client.usergroups_users_list(usergroup=usergroup_id)
+        member_ids = set(response.get("users") or [])
+    except Exception:
+        logger.exception("Failed to fetch usergroup members for %s", usergroup_id)
+        return cached[1] if cached else set()
+
+    _USERGROUP_MEMBERS_CACHE[usergroup_id] = (now, member_ids)
+    return member_ids
+
+
+def _is_user_in_usergroup(client, user_id: str | None, usergroup_id: str) -> bool:
+    if not user_id:
+        return False
+    return user_id in _get_usergroup_member_ids(client, usergroup_id)
+
+
+def _required_approval_usergroup_ids(
+    approval_data: dict[str, Any],
+    settings: Settings,
+) -> tuple[str, ...]:
     items = approval_data.get("items") or [approval_data]
-    return any(
-        item.get("is_unaccounted") is True
-        or str(item.get("reference_id") or "").strip().upper().endswith("-000")
-        for item in items
-        if isinstance(item, dict)
+    total_amount = sum(float(item.get("requested_amount") or 0) for item in items)
+    if total_amount > PRESIDENT_APPROVAL_MINIMUM_AMOUNT:
+        return (settings.president_vp_usergroup_id,)
+    if total_amount >= CHIEF_APPROVAL_MINIMUM_AMOUNT:
+        return (settings.chief_usergroup_id, settings.president_vp_usergroup_id)
+    return ()
+
+
+def _approval_role_requirement_text(approval_data: dict[str, Any], settings: Settings) -> str | None:
+    required_usergroup_ids = _required_approval_usergroup_ids(approval_data, settings)
+    if not required_usergroup_ids:
+        return None
+
+    total_amount = _bundle_total_amount(approval_data.get("items") or [approval_data])
+    role_mentions = " or ".join(f"<!subteam^{usergroup_id}>" for usergroup_id in required_usergroup_ids)
+    return (
+        f"{role_mentions} must approve or reject this request "
+        f"(combined total: {format_usd(total_amount)})."
     )
+
+
+def _manager_decision_restriction_message(
+    approval_data: dict[str, Any],
+    settings: Settings,
+) -> str:
+    messages = []
+    role_requirement = _approval_role_requirement_text(approval_data, settings)
+    if role_requirement:
+        messages.append(f"Only {role_requirement[0].lower() + role_requirement[1:]}")
+    messages.append("This request remains pending.")
+    return " ".join(messages)
+
+
+def _is_user_in_any_usergroup(client, user_id: str | None, usergroup_ids: tuple[str, ...]) -> bool:
+    return any(_is_user_in_usergroup(client, user_id, usergroup_id) for usergroup_id in usergroup_ids)
 
 
 def _is_authorized_manager_decision(
-    approval_data: dict[str, Any],
     *,
-    is_approved: bool,
-    manager_id: str | None,
+    required_role_usergroup_ids: tuple[str, ...] = (),
+    manager_in_required_role: bool = False,
 ) -> bool:
-    return (
-        not is_approved
-        or not _request_requires_bno_admin_approval(approval_data)
-        or manager_id == BNO_ADMIN_USER_ID
-    )
+    return not required_role_usergroup_ids or manager_in_required_role
 
 
 def _get_bot_version() -> str:
@@ -424,17 +477,22 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
         if not manager_id:
             return
 
+        required_role_usergroup_ids = _required_approval_usergroup_ids(approval_data, settings)
+        manager_in_required_role = _is_user_in_any_usergroup(
+            bolt_app.client,
+            manager_id,
+            required_role_usergroup_ids,
+        )
         if not _is_authorized_manager_decision(
-            approval_data,
-            is_approved=is_approved,
-            manager_id=manager_id,
+            required_role_usergroup_ids=required_role_usergroup_ids,
+            manager_in_required_role=manager_in_required_role,
         ):
             bolt_app.client.chat_postMessage(
                 channel=settings.manager_channel_id,
                 thread_ts=thread_ts,
-                text=(
-                    f"Only <@{BNO_ADMIN_USER_ID}> can approve requests containing `-000` items. "
-                    "This request remains pending."
+                text=_manager_decision_restriction_message(
+                    approval_data,
+                    settings,
                 ),
             )
             return
@@ -769,15 +827,16 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                         "original_message_ts": None,
                     }
 
+                    required_role_usergroup_ids = _required_approval_usergroup_ids(approval_data, settings)
                     if not _is_authorized_manager_decision(
-                        approval_data,
-                        is_approved=recovered_is_approved,
-                        manager_id=recovered_manager_id,
+                        required_role_usergroup_ids=required_role_usergroup_ids,
+                        manager_in_required_role=_is_user_in_any_usergroup(
+                            bolt_app.client,
+                            recovered_manager_id,
+                            required_role_usergroup_ids,
+                        ),
                     ):
-                        logger.info(
-                            "Ignoring unauthorized approval for restricted request %s",
-                            request_id,
-                        )
+                        logger.info("Ignoring unauthorized decision for restricted request %s", request_id)
                         continue
 
                     _submit_manager_decision_processing(
@@ -1978,7 +2037,6 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                         item_budget_reject_threshold_percent_of_estimate=settings.item_budget_reject_threshold_percent_of_estimate,
                     )
 
-                requires_bno_admin_approval = _request_requires_bno_admin_approval({"items": items})
                 manager_notification_text = f"Purchase request {request_id} from <@{user_id}>"
                 try:
                     subscribers = sheets.get_subteam_ping_subscribers()
@@ -1990,20 +2048,16 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                     watcher_text, watcher_block = watcher_announcement
                     manager_notification_text += f"\n{watcher_text}"
                     blocks.append(watcher_block)
-                if requires_bno_admin_approval:
-                    manager_notification_text += (
-                        f"\n<@{BNO_ADMIN_USER_ID}> this request includes a `-000` item and requires your approval."
-                    )
+                role_requirement_text = _approval_role_requirement_text(
+                    {"items": items},
+                    settings,
+                )
+                if role_requirement_text:
+                    manager_notification_text += f"\n{role_requirement_text}"
                     blocks.append(
                         {
                             "type": "section",
-                            "text": {
-                                "type": "mrkdwn",
-                                "text": (
-                                    f"⚠️ <@{BNO_ADMIN_USER_ID}> is the only person who can approve "
-                                    "requests containing `-000` items."
-                                ),
-                            },
+                            "text": {"type": "mrkdwn", "text": f"⚠️ {role_requirement_text}"},
                         }
                     )
 
@@ -2271,17 +2325,21 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                         return
 
             if approval_data and (is_approved or is_rejected):
+                required_role_usergroup_ids = _required_approval_usergroup_ids(approval_data, settings)
                 if not _is_authorized_manager_decision(
-                    approval_data,
-                    is_approved=is_approved,
-                    manager_id=manager_id,
+                    required_role_usergroup_ids=required_role_usergroup_ids,
+                    manager_in_required_role=_is_user_in_any_usergroup(
+                        client,
+                        manager_id,
+                        required_role_usergroup_ids,
+                    ),
                 ):
                     client.chat_postMessage(
                         channel=settings.manager_channel_id,
                         thread_ts=thread_ts,
-                        text=(
-                            f"Only <@{BNO_ADMIN_USER_ID}> can approve requests containing `-000` items. "
-                            "This request remains pending."
+                        text=_manager_decision_restriction_message(
+                            approval_data,
+                            settings,
                         ),
                     )
                     return
