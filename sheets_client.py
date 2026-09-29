@@ -96,6 +96,9 @@ PURCHASE_LOG_HEADERS = [
     "club_purchasing_power_change",
 ]
 
+SUBTEAM_PING_SUBSCRIBERS_TAB = "Subteam_Ping_Subscribers"
+SUBTEAM_PING_SUBSCRIBERS_HEADERS = ["subteam_prefix", "user_id"]
+
 PURCHASE_LOG_HEADERS_BANK_NAMES = [
     "request_id",
     "submitted_at_utc",
@@ -430,6 +433,91 @@ class SheetsClient:
             except Exception as e:
                 logger.error("Failed to create _Config tab: %s", e)
                 raise SheetsClientError("Could not create _Config tab") from e
+
+    def _ensure_subteam_ping_subscribers_tab(self):
+        try:
+            ws = self._sh.worksheet(SUBTEAM_PING_SUBSCRIBERS_TAB)
+        except WorksheetNotFound:
+            try:
+                ws = self._sh.add_worksheet(
+                    title=SUBTEAM_PING_SUBSCRIBERS_TAB,
+                    rows=1000,
+                    cols=len(SUBTEAM_PING_SUBSCRIBERS_HEADERS),
+                )
+                ws.append_row(SUBTEAM_PING_SUBSCRIBERS_HEADERS)
+                logger.info("Created %s tab", SUBTEAM_PING_SUBSCRIBERS_TAB)
+            except Exception as e:
+                logger.exception("Failed to create subteam ping subscribers tab")
+                raise SheetsClientError("Could not create subteam ping subscribers tab") from e
+        except Exception as e:
+            raise SheetsClientError("Failed to open subteam ping subscribers tab") from e
+
+        try:
+            values = ws.get_all_values()
+            if not values:
+                ws.append_row(SUBTEAM_PING_SUBSCRIBERS_HEADERS)
+            elif [value.strip() for value in values[0][:2]] != SUBTEAM_PING_SUBSCRIBERS_HEADERS:
+                raise SheetsClientError(
+                    f"Unexpected headers in {SUBTEAM_PING_SUBSCRIBERS_TAB} tab"
+                )
+        except SheetsClientError:
+            raise
+        except Exception as e:
+            raise SheetsClientError("Failed to read subteam ping subscribers tab") from e
+        return ws
+
+    def get_subteam_ping_subscribers(self) -> dict[str, set[str]]:
+        ws = self._ensure_subteam_ping_subscribers_tab()
+        try:
+            values = ws.get_all_values()
+        except Exception as e:
+            raise SheetsClientError("Failed to read subteam ping subscribers") from e
+
+        subscribers: dict[str, set[str]] = {}
+        for row in values[1:]:
+            prefix = (row[0] if row else "").strip().upper()
+            user_id = (row[1] if len(row) > 1 else "").strip()
+            if prefix and user_id:
+                subscribers.setdefault(prefix, set()).add(user_id)
+        return subscribers
+
+    def add_subteam_ping_subscriber(self, *, subteam_prefix: str, user_id: str) -> bool:
+        prefix = subteam_prefix.strip().upper()
+        user_id = user_id.strip()
+        if not prefix or not user_id:
+            raise ValueError("Subteam prefix and user ID are required")
+
+        subscribers = self.get_subteam_ping_subscribers()
+        if user_id in subscribers.get(prefix, set()):
+            return False
+
+        ws = self._ensure_subteam_ping_subscribers_tab()
+        try:
+            ws.append_row([prefix, user_id])
+        except Exception as e:
+            raise SheetsClientError("Failed to add subteam ping subscriber") from e
+        return True
+
+    def remove_subteam_ping_subscriber(self, *, subteam_prefix: str, user_id: str) -> bool:
+        prefix = subteam_prefix.strip().upper()
+        user_id = user_id.strip()
+        if not prefix or not user_id:
+            raise ValueError("Subteam prefix and user ID are required")
+
+        ws = self._ensure_subteam_ping_subscribers_tab()
+        try:
+            values = ws.get_all_values()
+            matching_rows = [
+                row_number
+                for row_number, row in enumerate(values[1:], start=2)
+                if (row[0] if row else "").strip().upper() == prefix
+                and (row[1] if len(row) > 1 else "").strip() == user_id
+            ]
+            for row_number in reversed(matching_rows):
+                ws.delete_rows(row_number)
+        except Exception as e:
+            raise SheetsClientError("Failed to remove subteam ping subscriber") from e
+        return bool(matching_rows)
 
     def get_and_increment_request_counter(self) -> int:
         """

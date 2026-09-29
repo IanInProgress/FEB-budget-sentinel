@@ -178,6 +178,9 @@ The bot uses the following reference ID prefixes to identify subteams:
 - `/reference`: DM yourself the reference ID-to-subteam list
 - `/reference <ID>`: DM yourself a view-only link to that subteam's spreadsheet (example: `/reference MECH-001`; a prefix such as `MECH` also works)
 - `/reimburse`: Move approved spend from pending to Amount Reimbursed (manager workflow)
+- `/subteam-pings add <prefix>` / `remove <prefix>` / `list`: Manage your optional purchase-request watcher subscriptions in the manager channel
+
+Subteam ping subscriptions are voluntary watchers, not assigned leadership coverage. Watchers are mentioned on new manager-channel purchase requests for their selected subteams.
 
 Each reference prefix maps to its own copied subteam spreadsheet. Google Drive sharing permissions still control access; set each spreadsheet to **Anyone with the link → Viewer** if anyone with the link should be able to view it without editing.
 
@@ -321,7 +324,8 @@ Configure your Slack App at [api.slack.com/apps](https://api.slack.com/apps):
 3. **Slash Commands** → Create commands:
    - Command: `/tutorial`
    - Command: `/reimburse`
-   - Request URL: `https://your-domain.com/slack/commands` (same for both)
+   - Command: `/subteam-pings`
+   - Request URL: `https://your-domain.com/slack/commands` (same for all)
 
 4. **Interactivity & Shortcuts** → Enable:
    - Request URL: `https://your-domain.com/slack/commands`

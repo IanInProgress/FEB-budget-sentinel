@@ -56,6 +56,7 @@ MANAGER_REJECT_SHORTCODES = (":x:", ":negative_squared_cross_mark:", ":heavy_mul
 MANAGER_DECISION_SCAN_INTERVAL_SECONDS = 30
 MANAGER_DECISION_SCAN_HISTORY_LIMIT = 100
 BNO_ADMIN_USER_ID = "U06J4T27789"
+SLACK_ACTION_VALUE_MAX_LENGTH = 2000
 
 
 def _request_requires_bno_admin_approval(approval_data: dict[str, Any]) -> bool:
@@ -323,6 +324,58 @@ def _format_item_lines_for_message(items: list[dict[str, Any]]) -> str:
             f"Item {item['line_number']}: {item['reference_id']} | {item['item_name']} | {format_usd(float(item['requested_amount']))}"
         )
     return "\n".join(parts)
+
+
+def _serialize_confirmation_button_value(confirmation_data: dict[str, Any]) -> str | None:
+    value = json.dumps(confirmation_data)
+    if len(value) > SLACK_ACTION_VALUE_MAX_LENGTH:
+        return None
+    return value
+
+
+def _parse_subteam_ping_command(text: str) -> tuple[str, str | None]:
+    parts = text.strip().split()
+    usage = "Usage: `/subteam-pings add <prefix>`, `/subteam-pings remove <prefix>`, or `/subteam-pings list`."
+    if len(parts) == 1 and parts[0].lower() == "list":
+        return "list", None
+    if len(parts) != 2 or parts[0].lower() not in {"add", "remove"}:
+        raise ValueError(usage)
+
+    action, prefix = parts[0].lower(), parts[1].upper()
+    if prefix not in REFERENCE_ID_PREFIX_TO_TAB:
+        valid_prefixes = ", ".join(REFERENCE_ID_PREFIX_TO_TAB)
+        raise ValueError(f"Unknown subteam prefix `{prefix}`. Valid prefixes: {valid_prefixes}.")
+    return action, prefix
+
+
+def _build_subteam_ping_announcement(
+    items: list[dict[str, Any]],
+    subscribers_by_prefix: dict[str, set[str]],
+) -> tuple[str, dict[str, Any]] | None:
+    prefix_by_tab = {tab_name: prefix for prefix, tab_name in REFERENCE_ID_PREFIX_TO_TAB.items()}
+    users_by_prefix: dict[str, set[str]] = {}
+    for item in items:
+        prefix = prefix_by_tab.get(str(item.get("subteam_tab") or ""))
+        if prefix and subscribers_by_prefix.get(prefix):
+            users_by_prefix[prefix] = subscribers_by_prefix[prefix]
+
+    subteams_by_user: dict[str, list[str]] = {}
+    for prefix, user_ids in users_by_prefix.items():
+        for user_id in sorted(user_ids):
+            subteams_by_user.setdefault(user_id, []).append(prefix)
+    if not subteams_by_user:
+        return None
+
+    watcher_text = ", ".join(
+        f"<@{user_id}> ({', '.join(prefixes)})"
+        for user_id, prefixes in subteams_by_user.items()
+    )
+    message = f"Subteam watchers: {watcher_text}"
+    block = {
+        "type": "section",
+        "text": {"type": "mrkdwn", "text": f"*{message}*"},
+    }
+    return message, block
 
 
 def create_server(settings: Settings) -> tuple[Flask, App]:
@@ -1026,6 +1079,18 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                     "receipt_link": receipt_link,
                     "is_bulk_order": is_bulk_order,
                 }
+                confirmation_value = _serialize_confirmation_button_value(confirmation_data)
+                if confirmation_value is None:
+                    client.chat_postMessage(
+                        channel=channel_id,
+                        thread_ts=original_message_ts,
+                        text=(
+                            "This request is too large for Slack's confirmation buttons. "
+                            "Please reduce the number of items or shorten the details, "
+                            "or split it into smaller requests."
+                        ),
+                    )
+                    return
 
                 blocks = [
                     {
@@ -1086,14 +1151,14 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                                     "text": {"type": "plain_text", "text": "Confirm"},
                                     "style": "primary",
                                     "action_id": "confirm_purchase",
-                                    "value": json.dumps(confirmation_data)
+                                    "value": confirmation_value
                                 },
                                 {
                                     "type": "button",
                                     "text": {"type": "plain_text", "text": "Cancel"},
                                     "style": "danger",
                                     "action_id": "cancel_purchase",
-                                    "value": json.dumps(confirmation_data)
+                                    "value": confirmation_value
                                 }
                             ]
                         }
@@ -1493,6 +1558,68 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
         except Exception:
             logger.exception("Failed to delete tutorial message")
 
+    @bolt_app.command("/subteam-pings")
+    def handle_subteam_pings_command(ack, body, client):
+        ack()
+
+        user_id = body.get("user_id")
+        channel_id = body.get("channel_id")
+        raw_text = (body.get("text") or "").strip()
+        if not user_id or not channel_id:
+            return
+
+        if channel_id != settings.manager_channel_id:
+            client.chat_postEphemeral(
+                channel=channel_id,
+                user=user_id,
+                text="Please run `/subteam-pings` in the manager channel.",
+            )
+            return
+
+        try:
+            action, prefix = _parse_subteam_ping_command(raw_text)
+            if action == "list":
+                subscriptions = sheets.get_subteam_ping_subscribers()
+                user_prefixes = sorted(
+                    prefix
+                    for prefix, user_ids in subscriptions.items()
+                    if user_id in user_ids
+                )
+                response_text = (
+                    "You are subscribed to: " + ", ".join(user_prefixes)
+                    if user_prefixes
+                    else "You are not subscribed to any subteam pings."
+                )
+            elif action == "add" and prefix:
+                added = sheets.add_subteam_ping_subscriber(
+                    subteam_prefix=prefix,
+                    user_id=user_id,
+                )
+                response_text = (
+                    f"You will be pinged for `{prefix}` purchase requests."
+                    if added
+                    else f"You are already subscribed to `{prefix}` purchase requests."
+                )
+            elif action == "remove" and prefix:
+                removed = sheets.remove_subteam_ping_subscriber(
+                    subteam_prefix=prefix,
+                    user_id=user_id,
+                )
+                response_text = (
+                    f"You will no longer be pinged for `{prefix}` purchase requests."
+                    if removed
+                    else f"You were not subscribed to `{prefix}` purchase requests."
+                )
+            else:
+                response_text = "Unsupported subteam ping action."
+        except ValueError as e:
+            response_text = str(e)
+        except Exception:
+            logger.exception("Failed to manage subteam ping subscriptions for %s", user_id)
+            response_text = "Could not update subteam ping subscriptions right now. Please try again."
+
+        client.chat_postEphemeral(channel=channel_id, user=user_id, text=response_text)
+
     @bolt_app.command("/reimburse")
     def handle_reimburse_command(ack, body, client):
         ack()
@@ -1853,6 +1980,16 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
 
                 requires_bno_admin_approval = _request_requires_bno_admin_approval({"items": items})
                 manager_notification_text = f"Purchase request {request_id} from <@{user_id}>"
+                try:
+                    subscribers = sheets.get_subteam_ping_subscribers()
+                    watcher_announcement = _build_subteam_ping_announcement(items, subscribers)
+                except Exception:
+                    logger.exception("Failed to load subteam ping subscribers for %s", request_id)
+                    watcher_announcement = None
+                if watcher_announcement:
+                    watcher_text, watcher_block = watcher_announcement
+                    manager_notification_text += f"\n{watcher_text}"
+                    blocks.append(watcher_block)
                 if requires_bno_admin_approval:
                     manager_notification_text += (
                         f"\n<@{BNO_ADMIN_USER_ID}> this request includes a `-000` item and requires your approval."
