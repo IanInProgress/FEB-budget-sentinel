@@ -13,6 +13,7 @@ class Settings:
     manager_channel_id: str
     chief_usergroup_id: str
     president_vp_usergroup_id: str
+    easter_egg_usergroup_id: str | None
 
     google_sheet_id: str
     google_service_account_file: str | None
@@ -80,6 +81,7 @@ def load_settings(*, load_env: bool = True) -> Settings:
         )
     chief_usergroup_id = _require_env("CHIEF_USERGROUP_ID")
     president_vp_usergroup_id = _require_env("PRESIDENT_VP_USERGROUP_ID")
+    easter_egg_usergroup_id = os.getenv("EASTER_EGG_USERGROUP_ID", "").strip() or None
 
     google_sheet_id = _require_env("GOOGLE_SHEET_ID")
     google_service_account_file = os.getenv("GOOGLE_SERVICE_ACCOUNT_FILE", "").strip() or None
@@ -110,6 +112,7 @@ def load_settings(*, load_env: bool = True) -> Settings:
         slack_signing_secret=slack_signing_secret,
         chief_usergroup_id=chief_usergroup_id,
         president_vp_usergroup_id=president_vp_usergroup_id,
+        easter_egg_usergroup_id=easter_egg_usergroup_id,
         manager_channel_id=manager_channel_id,
         google_sheet_id=google_sheet_id,
         google_service_account_file=google_service_account_file,

@@ -41,7 +41,7 @@ A Slack-integrated budget management system for Formula Electric Berkeley. Membe
 
 - Python 3.9+
 - Slack workspace with bot permissions:
-   - **OAuth Scopes**: `chat:write`, `chat:write.public`, `commands`, `channels:history`, `groups:history`, `reactions:read`, `reactions:write`, `channels:join`, `usergroups:read`
+   - **OAuth Scopes**: `chat:write`, `chat:write.public`, `commands`, `channels:history`, `groups:history`, `reactions:read`, `reactions:write`, `channels:join`, `usergroups:read`, `files:write`
   - **Event Subscriptions**: `message.channels`, `message.groups`
 - Google Sheets API access with service account
 - Google Sheet with budget data (see Google Sheets Format section below)
@@ -321,22 +321,25 @@ Configure your Slack App at [api.slack.com/apps](https://api.slack.com/apps):
    - `groups:history`
    - `channels:join`
    - `usergroups:read`
+   - `files:write`
 
-2. **Event Subscriptions** → Enable and subscribe to:
+3. **Optional mention Easter egg**: Set `EASTER_EGG_USERGROUP_ID` to the Slack user-group ID. When a member is mentioned individually, the bot uploads `image.png` from the project root into that channel or thread; mentioning the group itself does not trigger it. Reinstall the Slack app after adding the `files:write` OAuth scope.
+
+4. **Event Subscriptions** → Enable and subscribe to:
    - `message.channels`
    - `message.groups`
    - Request URL: `https://your-domain.com/slack/events`
 
-3. **Slash Commands** → Create commands:
+5. **Slash Commands** → Create commands:
    - Command: `/tutorial`
    - Command: `/reimburse`
    - Command: `/subteam-pings`
    - Request URL: `https://your-domain.com/slack/commands` (same for all)
 
-4. **Interactivity & Shortcuts** → Enable:
+6. **Interactivity & Shortcuts** → Enable:
    - Request URL: `https://your-domain.com/slack/commands`
 
-5. **Install App** → Install to your workspace and copy the Bot Token
+7. **Install App** → Install to your workspace and copy the Bot Token
 
 ## Development
 

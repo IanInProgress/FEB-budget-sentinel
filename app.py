@@ -60,6 +60,7 @@ USERGROUP_MEMBERS_CACHE_TTL_SECONDS = 300
 CHIEF_APPROVAL_MINIMUM_AMOUNT = 100.0
 PRESIDENT_APPROVAL_MINIMUM_AMOUNT = 250.0
 _USERGROUP_MEMBERS_CACHE: dict[str, tuple[float, set[str]]] = {}
+USER_MENTION_PATTERN = re.compile(r"<@([A-Z0-9]+)(?:\|[^>]+)?>")
 
 
 def _get_usergroup_member_ids(client, usergroup_id: str) -> set[str]:
@@ -83,6 +84,29 @@ def _is_user_in_usergroup(client, user_id: str | None, usergroup_id: str) -> boo
     if not user_id:
         return False
     return user_id in _get_usergroup_member_ids(client, usergroup_id)
+
+
+def _send_easter_egg_if_triggered(event: dict[str, Any], client, settings: Settings) -> bool:
+    usergroup_id = settings.easter_egg_usergroup_id
+    channel_id = event.get("channel")
+    if not usergroup_id or not channel_id:
+        return False
+
+    mentioned_user_ids = USER_MENTION_PATTERN.findall(event.get("text") or "")
+    if not any(_is_user_in_usergroup(client, user_id, usergroup_id) for user_id in mentioned_user_ids):
+        return False
+
+    upload = {
+        "channel": channel_id,
+        "file": os.path.join(os.path.dirname(__file__), "image.png"),
+        "filename": "image.png",
+        "title": "Stop sign meme",
+        "alt_txt": "A man holds up his hand in front of a stop sign.",
+    }
+    if event.get("thread_ts"):
+        upload["thread_ts"] = event["thread_ts"]
+    client.files_upload_v2(**upload)
+    return True
 
 
 def _required_approval_usergroup_ids(
@@ -2234,6 +2258,11 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
             return
 
         thread_ts = event.get("thread_ts")
+
+        try:
+            _send_easter_egg_if_triggered(event, client, settings)
+        except Exception:
+            logger.exception("Failed to send user-group mention Easter egg")
 
         # Non-thread channel messages no longer trigger purchase parsing.
         # Intake now happens via /purchase and /bigorder slash commands.
