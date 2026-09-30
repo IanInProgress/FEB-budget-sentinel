@@ -89,7 +89,8 @@ def _is_user_in_usergroup(client, user_id: str | None, usergroup_id: str) -> boo
 def _send_easter_egg_if_triggered(event: dict[str, Any], client, settings: Settings) -> bool:
     usergroup_id = settings.easter_egg_usergroup_id
     channel_id = event.get("channel")
-    if not usergroup_id or not channel_id:
+    thread_ts = event.get("thread_ts") or event.get("ts")
+    if not usergroup_id or not channel_id or not thread_ts:
         return False
 
     mentioned_user_ids = USER_MENTION_PATTERN.findall(event.get("text") or "")
@@ -103,8 +104,7 @@ def _send_easter_egg_if_triggered(event: dict[str, Any], client, settings: Setti
         "title": "Stop sign meme",
         "alt_txt": "A man holds up his hand in front of a stop sign.",
     }
-    if event.get("thread_ts"):
-        upload["thread_ts"] = event["thread_ts"]
+    upload["thread_ts"] = thread_ts
     client.files_upload_v2(**upload)
     return True
 

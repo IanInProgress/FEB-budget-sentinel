@@ -23,13 +23,14 @@ def test_easter_egg_posts_inline_image_for_individual_group_member_mention():
     )
 
     sent = _send_easter_egg_if_triggered(
-        {"channel": "C123", "text": "Hey <@UMEMBER>"}, client, settings
+        {"channel": "C123", "ts": "111.222", "text": "Hey <@UMEMBER>"}, client, settings
     )
 
     assert sent is True
     assert len(client.messages) == 1
     upload = client.messages[0]
     assert upload["channel"] == "C123"
+    assert upload["thread_ts"] == "111.222"
     assert upload["file"].endswith("/image.png")
     assert upload["filename"] == "image.png"
     assert upload["alt_txt"]
@@ -59,7 +60,12 @@ def test_easter_egg_keeps_thread_context():
     )
 
     _send_easter_egg_if_triggered(
-        {"channel": "C123", "thread_ts": "123.456", "text": "<@UMEMBER>"},
+        {
+            "channel": "C123",
+            "thread_ts": "123.456",
+            "ts": "123.789",
+            "text": "<@UMEMBER>",
+        },
         client,
         settings,
     )
