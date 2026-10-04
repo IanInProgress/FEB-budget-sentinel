@@ -25,6 +25,7 @@ def test_posts_member_specific_image(monkeypatch):
     assert upload["thread_ts"] == "111.222"
     assert upload["file"].endswith("/images/bob.png")
     assert upload["filename"] == "bob.png"
+    assert upload["title"] == "Bob"
 
 
 def test_one_image_per_distinct_mapped_member(monkeypatch):
@@ -34,6 +35,7 @@ def test_one_image_per_distinct_mapped_member(monkeypatch):
         {"channel": "C1", "ts": "1.2", "text": "<@UALICE> <@UBOB> <@UALICE> <@UOTHER>"}, client
     )
     assert [m["filename"] for m in client.messages] == ["image.png", "bob.png"]
+    assert [m["title"] for m in client.messages] == ["Image", "Bob"]
 
 
 def test_unmapped_or_group_mention_does_nothing(monkeypatch):

@@ -111,7 +111,7 @@ def _send_easter_egg_if_triggered(event: dict[str, Any], client, settings: Setti
             thread_ts=thread_ts,
             file=os.path.join(os.path.dirname(__file__), image_path),
             filename=os.path.basename(image_path),
-            title="Stop sign meme",
+            title=os.path.splitext(os.path.basename(image_path))[0].title(),
             alt_txt="A man holds up his hand in front of a stop sign.",
         )
         sent = True
