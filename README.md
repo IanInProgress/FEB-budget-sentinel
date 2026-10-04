@@ -323,7 +323,7 @@ Configure your Slack App at [api.slack.com/apps](https://api.slack.com/apps):
    - `usergroups:read`
    - `files:write`
 
-3. **Optional mention Easter egg**: Set `EASTER_EGG_USERGROUP_ID` to the Slack user-group ID. When a member is mentioned individually, the bot uploads `image.png` from the project root into that channel or thread; mentioning the group itself does not trigger it. Reinstall the Slack app after adding the `files:write` OAuth scope.
+3. **Optional mention Easter egg**: Add Slack member ID → image path entries to `EASTER_EGG_IMAGES` in `app.py`. When a mapped member is mentioned individually, the bot uploads their image into that channel or thread. Reinstall the Slack app after adding the `files:write` OAuth scope.
 
 4. **Event Subscriptions** → Enable and subscribe to:
    - `message.channels`

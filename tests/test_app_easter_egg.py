@@ -1,73 +1,53 @@
-from types import SimpleNamespace
-
-from app import _USERGROUP_MEMBERS_CACHE, _send_easter_egg_if_triggered
+import app
+from app import _send_easter_egg_if_triggered
 
 
 class FakeClient:
-    def __init__(self, members):
-        self.members = members
+    def __init__(self):
         self.messages = []
-
-    def usergroups_users_list(self, *, usergroup):
-        return {"users": self.members}
 
     def files_upload_v2(self, **upload):
         self.messages.append(upload)
 
 
-def test_easter_egg_posts_inline_image_for_individual_group_member_mention():
-    _USERGROUP_MEMBERS_CACHE.clear()
-    client = FakeClient(["UMEMBER"])
-    settings = SimpleNamespace(
-        easter_egg_usergroup_id="S_GROUP",
-    )
+def _map(monkeypatch):
+    monkeypatch.setattr(app, "EASTER_EGG_IMAGES", {"UALICE": "image.png", "UBOB": "images/bob.png"})
 
-    sent = _send_easter_egg_if_triggered(
-        {"channel": "C123", "ts": "111.222", "text": "Hey <@UMEMBER>"}, client, settings
-    )
 
-    assert sent is True
-    assert len(client.messages) == 1
+def test_posts_member_specific_image(monkeypatch):
+    _map(monkeypatch)
+    client = FakeClient()
+    assert _send_easter_egg_if_triggered(
+        {"channel": "C123", "ts": "111.222", "text": "Hey <@UBOB>"}, client
+    )
     upload = client.messages[0]
     assert upload["channel"] == "C123"
     assert upload["thread_ts"] == "111.222"
-    assert upload["file"].endswith("/image.png")
-    assert upload["filename"] == "image.png"
-    assert upload["alt_txt"]
+    assert upload["file"].endswith("/images/bob.png")
+    assert upload["filename"] == "bob.png"
 
 
-def test_easter_egg_does_not_trigger_for_group_mention_or_nonmember():
-    _USERGROUP_MEMBERS_CACHE.clear()
-    client = FakeClient(["UMEMBER"])
-    settings = SimpleNamespace(
-        easter_egg_usergroup_id="S_GROUP",
+def test_one_image_per_distinct_mapped_member(monkeypatch):
+    _map(monkeypatch)
+    client = FakeClient()
+    _send_easter_egg_if_triggered(
+        {"channel": "C1", "ts": "1.2", "text": "<@UALICE> <@UBOB> <@UALICE> <@UOTHER>"}, client
     )
+    assert [m["filename"] for m in client.messages] == ["image.png", "bob.png"]
 
-    assert not _send_easter_egg_if_triggered(
-        {"channel": "C123", "text": "<!subteam^S_GROUP>"}, client, settings
-    )
-    assert not _send_easter_egg_if_triggered(
-        {"channel": "C123", "text": "Hey <@U_OTHER>"}, client, settings
-    )
+
+def test_unmapped_or_group_mention_does_nothing(monkeypatch):
+    _map(monkeypatch)
+    client = FakeClient()
+    assert not _send_easter_egg_if_triggered({"channel": "C123", "ts": "1.2", "text": "<@UOTHER>"}, client)
+    assert not _send_easter_egg_if_triggered({"channel": "C123", "ts": "1.2", "text": "<!subteam^S1>"}, client)
     assert client.messages == []
 
 
-def test_easter_egg_keeps_thread_context():
-    _USERGROUP_MEMBERS_CACHE.clear()
-    client = FakeClient(["UMEMBER"])
-    settings = SimpleNamespace(
-        easter_egg_usergroup_id="S_GROUP",
-    )
-
+def test_keeps_thread_context(monkeypatch):
+    _map(monkeypatch)
+    client = FakeClient()
     _send_easter_egg_if_triggered(
-        {
-            "channel": "C123",
-            "thread_ts": "123.456",
-            "ts": "123.789",
-            "text": "<@UMEMBER>",
-        },
-        client,
-        settings,
+        {"channel": "C123", "thread_ts": "123.456", "ts": "123.789", "text": "<@UALICE>"}, client
     )
-
     assert client.messages[0]["thread_ts"] == "123.456"

@@ -86,27 +86,36 @@ def _is_user_in_usergroup(client, user_id: str | None, usergroup_id: str) -> boo
     return user_id in _get_usergroup_member_ids(client, usergroup_id)
 
 
-def _send_easter_egg_if_triggered(event: dict[str, Any], client, settings: Settings) -> bool:
-    usergroup_id = settings.easter_egg_usergroup_id
+# Slack member ID -> image path (relative to this file) sent when that member is mentioned.
+EASTER_EGG_IMAGES: dict[str, str] = {
+    "U09JM29RQ4C": "robot.jpg",
+    "U07PAF7S4D7": "arnold.png",
+    "U0AEDN6CN06": "arnold.png",
+}
+
+
+def _send_easter_egg_if_triggered(event: dict[str, Any], client, settings: Settings | None = None) -> bool:
     channel_id = event.get("channel")
     thread_ts = event.get("thread_ts") or event.get("ts")
-    if not usergroup_id or not channel_id or not thread_ts:
+    if not channel_id or not thread_ts:
         return False
 
-    mentioned_user_ids = USER_MENTION_PATTERN.findall(event.get("text") or "")
-    if not any(_is_user_in_usergroup(client, user_id, usergroup_id) for user_id in mentioned_user_ids):
-        return False
-
-    upload = {
-        "channel": channel_id,
-        "file": os.path.join(os.path.dirname(__file__), "image.png"),
-        "filename": "image.png",
-        "title": "Stop sign meme",
-        "alt_txt": "A man holds up his hand in front of a stop sign.",
-    }
-    upload["thread_ts"] = thread_ts
-    client.files_upload_v2(**upload)
-    return True
+    mentioned_user_ids = dict.fromkeys(USER_MENTION_PATTERN.findall(event.get("text") or ""))
+    sent = False
+    for user_id in mentioned_user_ids:
+        image_path = EASTER_EGG_IMAGES.get(user_id)
+        if not image_path:
+            continue
+        client.files_upload_v2(
+            channel=channel_id,
+            thread_ts=thread_ts,
+            file=os.path.join(os.path.dirname(__file__), image_path),
+            filename=os.path.basename(image_path),
+            title="Stop sign meme",
+            alt_txt="A man holds up his hand in front of a stop sign.",
+        )
+        sent = True
+    return sent
 
 
 def _required_approval_usergroup_ids(
@@ -2262,7 +2271,7 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
         try:
             _send_easter_egg_if_triggered(event, client, settings)
         except Exception:
-            logger.exception("Failed to send user-group mention Easter egg")
+            logger.exception("Failed to send mention Easter egg")
 
         # Non-thread channel messages no longer trigger purchase parsing.
         # Intake now happens via /purchase and /bigorder slash commands.
