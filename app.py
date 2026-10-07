@@ -91,6 +91,7 @@ EASTER_EGG_IMAGES: dict[str, str] = {
     "U09JM29RQ4C": "robot.jpg",
     "U07PAF7S4D7": "arnold.png",
     "U0AEDN6CN06": "arnold.png",
+    "U09J6LLEAF4": "arnold.png",
 }
 
 
