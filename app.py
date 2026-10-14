@@ -145,6 +145,14 @@ def _approval_role_requirement_text(approval_data: dict[str, Any], settings: Set
     )
 
 
+def _normalize_request_id(text: str) -> str | None:
+    cleaned = text.strip().upper()
+    match = re.fullmatch(r"(?:REQ-?)?(\d{1,6})", cleaned)
+    if match:
+        return f"REQ-{int(match.group(1)):06d}"
+    return cleaned if REQUEST_ID_PATTERN.fullmatch(cleaned) else None
+
+
 def _manager_decision_restriction_message(
     approval_data: dict[str, Any],
     settings: Settings,
@@ -1823,6 +1831,126 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                 )
 
         EXECUTOR.submit(run_reimburse)
+
+    @bolt_app.command("/delete")
+    def handle_delete_command(ack, body, client):
+        ack()
+
+        user_id = body.get("user_id")
+        channel_id = body.get("channel_id")
+        raw_text = (body.get("text") or "").strip()
+        if not user_id or not channel_id:
+            return
+
+        if channel_id != settings.manager_channel_id:
+            client.chat_postEphemeral(
+                channel=channel_id,
+                user=user_id,
+                text="Please run `/delete` in the manager channel.",
+            )
+            return
+
+        request_id = _normalize_request_id(raw_text)
+        if not request_id:
+            client.chat_postEphemeral(
+                channel=channel_id,
+                user=user_id,
+                text="Usage: `/delete REQ-000003` (the number alone, like `/delete 3`, also works)",
+            )
+            return
+
+        def run_delete() -> None:
+            try:
+                entries = sheets.get_purchase_log_entries(request_id=request_id)
+                if not entries:
+                    client.chat_postMessage(channel=channel_id, text=f"❌ Could not find `{request_id}`.")
+                    return
+                if all(entry.status == "voided" for entry in entries):
+                    client.chat_postMessage(channel=channel_id, text=f"`{request_id}` was already voided.")
+                    return
+                if any(entry.status == "under_review" for entry in entries):
+                    client.chat_postMessage(
+                        channel=channel_id,
+                        text=f"`{request_id}` is still pending review. Approve or reject it first, then void it if needed.",
+                    )
+                    return
+
+                summaries: list[str] = []
+                failures: list[str] = []
+                for entry in entries:
+                    if entry.status != "approved":
+                        continue
+                    label = f"{entry.reference_id} | {entry.item_name} | {format_usd(entry.amount_usd)}"
+                    try:
+                        outcome = sheets.reverse_approved_spending(
+                            tab_name=entry.subteam,
+                            reference_id=entry.reference_id,
+                            amount=entry.amount_usd,
+                            delete_if_empty=entry.is_unaccounted,
+                        )
+                    except Exception:
+                        logger.exception("Failed to reverse %s for %s", entry.reference_id, request_id)
+                        outcome = "error"
+                    if outcome == "deleted":
+                        summaries.append(f"• {label} (budget line removed)")
+                    elif outcome == "reversed":
+                        summaries.append(f"• {label} (pending spend reduced)")
+                    else:
+                        failures.append(f"• {label} in *{entry.subteam}* could not be reversed ({outcome})")
+
+                if failures:
+                    client.chat_postMessage(
+                        channel=channel_id,
+                        text=(
+                            f"❌ `{request_id}` was not fully voided; the log is unchanged for retry or manual fixing.\n"
+                            + "\n".join(failures)
+                            + ("\nAlready reversed:\n" + "\n".join(summaries) if summaries else "")
+                        ),
+                    )
+                    return
+
+                sheets.mark_purchase_log_voided(
+                    request_id=request_id,
+                    voided_at_utc=datetime.now(timezone.utc).isoformat(),
+                    manager_id=user_id,
+                )
+                client.chat_postMessage(
+                    channel=channel_id,
+                    text=(
+                        f"🗑️ `{request_id}` voided by <@{user_id}>."
+                        + ("\n" + "\n".join(summaries) if summaries else "\nNo approved spending needed reversing.")
+                    ),
+                )
+
+                requester_id = entries[0].requester_id
+                if requester_id:
+                    item_lines = "\n".join(
+                        f"Item {entry.bundle_line_number}: {entry.reference_id} | {entry.item_name} | {format_usd(entry.amount_usd)}"
+                        for entry in entries
+                    )
+                    try:
+                        client.chat_postMessage(
+                            channel=requester_id,
+                            text=(
+                                f"🗑️ Your purchase request was *voided* by <@{user_id}>. "
+                                "It no longer counts against the budget.\n\n"
+                                f"*Request ID:* {request_id}\n"
+                                f"*Total Amount:* {format_usd(sum(entry.amount_usd for entry in entries))}\n"
+                                f"*Items:*\n{item_lines}\n\n"
+                                "If this purchase still needs to be made, please submit a new request."
+                            ),
+                        )
+                    except Exception:
+                        logger.exception("Failed to notify requester %s of void for %s", requester_id, request_id)
+                        client.chat_postMessage(
+                            channel=channel_id,
+                            text=f"⚠️ Couldn't DM <@{requester_id}> about the void.",
+                        )
+            except Exception:
+                logger.exception("Failed to process /delete for %s", request_id)
+                client.chat_postMessage(channel=channel_id, text="❌ Failed to void request. Please try again.")
+
+        EXECUTOR.submit(run_delete)
 
     @bolt_app.action("delete_bot_message")
     def handle_delete_bot_message(ack, body, client):

@@ -1370,3 +1370,96 @@ class SheetsClient:
         
         return new_ref_id
 
+
+    def reverse_approved_spending(
+        self,
+        *,
+        tab_name: str,
+        reference_id: str,
+        amount: float,
+        delete_if_empty: bool,
+    ) -> str:
+        """
+        Undo an approved purchase by subtracting its amount from Pending Spend (D).
+        When delete_if_empty is True (bot-created unaccounted lines), the row is deleted
+        if it has no budget, no pending spend, and no reimbursement left.
+        Returns "reversed", "deleted", or "not_found".
+        """
+        try:
+            ws = self._sh.worksheet(tab_name)
+        except WorksheetNotFound:
+            raise
+        except Exception as e:
+            raise SheetsClientError(f"Failed to open tab: {tab_name}") from e
+
+        try:
+            values = ws.get_all_values()
+        except Exception as e:
+            raise SheetsClientError(f"Failed to read tab values: {tab_name}") from e
+
+        matched_row = None
+        for i, row in enumerate(values[1:], start=2):
+            if ((row[0] if len(row) > 0 else "").strip()).upper() == reference_id.upper():
+                matched_row = i
+                break
+        if matched_row is None:
+            logger.warning("Reference ID %r not found in tab %r for reversal", reference_id, tab_name)
+            return "not_found"
+
+        row = values[matched_row - 1]
+        budget_raw = (row[2] if len(row) > 2 else "").strip()
+        current_pending = coerce_money(row[3] if len(row) > 3 else "", default=0.0)
+        reimbursed_raw = (row[4] if len(row) > 4 else "").strip()
+        current_reimbursed = coerce_money(reimbursed_raw, default=0.0)
+        new_pending = clamp_nonnegative(current_pending - amount)
+
+        try:
+            if delete_if_empty and not budget_raw and new_pending <= 0 and current_reimbursed <= 0:
+                ws.delete_rows(matched_row)
+                outcome = "deleted"
+            else:
+                ws.update_cell(matched_row, 4, new_pending)
+                outcome = "reversed"
+        except Exception as e:
+            raise SheetsClientError(f"Failed to reverse spending in tab {tab_name}") from e
+
+        self._cache.pop(tab_name, None)
+        logger.info("Reversed %s for %r in %r (%s)", amount, reference_id, tab_name, outcome)
+        return outcome
+
+    def mark_purchase_log_voided(
+        self,
+        *,
+        request_id: str,
+        voided_at_utc: str,
+        manager_id: str,
+    ) -> int:
+        """
+        Set status to "voided" on every Purchases_Log row for request_id.
+        Purchasing power changes are zeroed since the purchase no longer counts.
+        Returns the number of rows updated.
+        """
+        try:
+            ws = self._sh.worksheet("Purchases_Log")
+            values = ws.get_all_values()
+        except Exception as e:
+            raise SheetsClientError("Failed to read Purchases_Log") from e
+
+        batch_data = []
+        count = 0
+        for i, row in enumerate(values[1:], start=2):
+            if row and row[0] == request_id:
+                count += 1
+                batch_data.extend([
+                    {"range": f"C{i}", "values": [[voided_at_utc]]},
+                    {"range": f"D{i}", "values": [["voided"]]},
+                    {"range": f"F{i}", "values": [[manager_id]]},
+                    {"range": f"S{i}", "values": [[0]]},
+                    {"range": f"T{i}", "values": [[0]]},
+                ])
+        if batch_data:
+            try:
+                ws.batch_update(batch_data)
+            except Exception as e:
+                raise SheetsClientError("Failed to update Purchases_Log") from e
+        return count

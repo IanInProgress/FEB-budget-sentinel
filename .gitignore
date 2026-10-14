@@ -26,3 +26,4 @@ oauth-client.json
 .vscode/
 .idea/
 *.swp
+authorize_drive.py
