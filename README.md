@@ -183,7 +183,7 @@ The bot uses the following reference ID prefixes to identify subteams:
 - `/reference`: DM yourself the reference ID-to-subteam list
 - `/reference <ID>`: DM yourself a view-only link to that subteam's spreadsheet (example: `/reference MECH-001`; a prefix such as `MECH` also works)
 - `/reimburse`: Move approved spend from pending to Amount Reimbursed (manager workflow)
-- `/delete REQ-000003`: Void a request in the manager channel (`/delete 3` also works). Reverses its approved spend (reduces pending spend, removes bot-created lines left empty) and marks it `voided` in Purchases_Log
+- `/delete REQ-000003`: Void a request in the manager channel (`/delete 3` also works). Reverses its approved spend (reduces pending spend, removes bot-created lines left empty), marks it `voided` in Purchases_Log, and replaces the ✅ reaction on the original purchase message with 🗑️
 - `/subteam-pings add <prefix>` / `remove <prefix>` / `list`: Manage your optional purchase-request watcher subscriptions in the manager channel
 
 Subteam ping subscriptions are voluntary watchers, not assigned leadership coverage. Watchers are mentioned on new manager-channel purchase requests for their selected subteams.

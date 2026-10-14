@@ -153,6 +153,27 @@ def _normalize_request_id(text: str) -> str | None:
     return cleaned if REQUEST_ID_PATTERN.fullmatch(cleaned) else None
 
 
+def _replace_purchase_request_reaction(client, *, channel_id: str, message_ts: str) -> None:
+    logger = logging.getLogger("purchase_bot")
+    try:
+        client.reactions_remove(
+            channel=channel_id,
+            timestamp=message_ts,
+            name="white_check_mark",
+        )
+    except Exception as e:
+        logger.warning("Failed to remove approval reaction from voided request: %s", e)
+
+    try:
+        client.reactions_add(
+            channel=channel_id,
+            timestamp=message_ts,
+            name="wastebasket",
+        )
+    except Exception as e:
+        logger.warning("Failed to add void reaction to purchase request: %s", e)
+
+
 def _manager_decision_restriction_message(
     approval_data: dict[str, Any],
     settings: Settings,
@@ -1914,6 +1935,19 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                     voided_at_utc=datetime.now(timezone.utc).isoformat(),
                     manager_id=user_id,
                 )
+                original_channel_id = entries[0].original_channel_id
+                original_message_ts = entries[0].original_message_ts
+                if original_channel_id and original_message_ts:
+                    _replace_purchase_request_reaction(
+                        client,
+                        channel_id=original_channel_id,
+                        message_ts=original_message_ts,
+                    )
+                else:
+                    logger.warning(
+                        "Cannot update original purchase message reaction for %s: message metadata is unavailable",
+                        request_id,
+                    )
                 client.chat_postMessage(
                     channel=channel_id,
                     text=(
@@ -2281,6 +2315,8 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                             report,
                             settings.item_budget_reject_threshold_percent_of_estimate,
                         ),
+                        original_channel_id=channel_id,
+                        original_message_ts=original_message_ts,
                     )
 
                 client.chat_postMessage(

@@ -4,6 +4,7 @@ from app import (
 	_get_bot_version,
 	_is_authorized_manager_decision,
 	_parse_manager_decision_text,
+	_replace_purchase_request_reaction,
 	_required_approval_usergroup_ids,
 )
 
@@ -50,6 +51,27 @@ def test_parse_manager_decision_accepts_shortcode_aliases():
 def test_parse_manager_decision_rejects_prose():
 	assert _parse_manager_decision_text("Please ✅") == (False, False, None)
 	assert _parse_manager_decision_text("Please :white_check_mark: this") == (False, False, None)
+
+
+def test_voiding_replaces_purchase_message_checkmark_with_trash_can():
+	calls = []
+	client = SimpleNamespace(
+		reactions_remove=lambda **kwargs: calls.append(("remove", kwargs)),
+		reactions_add=lambda **kwargs: calls.append(("add", kwargs)),
+	)
+
+	_replace_purchase_request_reaction(client, channel_id="C123", message_ts="123.456")
+
+	assert calls == [
+		(
+			"remove",
+			{"channel": "C123", "timestamp": "123.456", "name": "white_check_mark"},
+		),
+		(
+			"add",
+			{"channel": "C123", "timestamp": "123.456", "name": "wastebasket"},
+		),
+	]
 
 
 def test_unaccounted_requests_use_same_amount_based_approval_tiers():

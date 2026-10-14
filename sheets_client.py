@@ -73,7 +73,7 @@ PURCHASE_LOG_HEADERS_WITH_POWER_SNAPSHOT_COLS = [
     "club_purchasing_power_change",
 ]
 
-PURCHASE_LOG_HEADERS = [
+PURCHASE_LOG_HEADERS_PRE_ORIGINAL_MESSAGE = [
     "request_id",
     "submitted_at_utc",
     "reviewed_at_utc",
@@ -94,6 +94,12 @@ PURCHASE_LOG_HEADERS = [
     "bundle_line_number",
     "subteam_purchasing_power_change",
     "club_purchasing_power_change",
+]
+
+PURCHASE_LOG_HEADERS = [
+    *PURCHASE_LOG_HEADERS_PRE_ORIGINAL_MESSAGE,
+    "original_channel_id",
+    "original_message_ts",
 ]
 
 SUBTEAM_PING_SUBSCRIBERS_TAB = "Subteam_Ping_Subscribers"
@@ -210,6 +216,8 @@ class PurchaseLogEntry:
     amount_usd: float
     is_unaccounted: bool
     rejection_reason: str
+    original_channel_id: str = ""
+    original_message_ts: str = ""
 
 
 @dataclass(frozen=True)
@@ -245,6 +253,8 @@ def _row_to_purchase_log_entry(row: list[str]) -> PurchaseLogEntry:
         amount_usd=float(amount),
         is_unaccounted=((row[11] if len(row) > 11 else "").strip().lower() == "true"),
         rejection_reason=(row[15] if len(row) > 15 else "").strip(),
+        original_channel_id=(row[20] if len(row) > 20 else "").strip(),
+        original_message_ts=(row[21] if len(row) > 21 else "").strip(),
     )
 
 
@@ -617,6 +627,11 @@ class SheetsClient:
                     migrated = True
                     actual_headers = ws.row_values(1)
 
+                if actual_headers == PURCHASE_LOG_HEADERS_PRE_ORIGINAL_MESSAGE:
+                    self._add_original_message_columns(ws)
+                    migrated = True
+                    actual_headers = ws.row_values(1)
+
                 if actual_headers != expected_headers:
                     values = ws.get_all_values()
                     has_data = len(values) > 1
@@ -816,6 +831,13 @@ class SheetsClient:
         ws.delete_columns(snapshot_start_column, snapshot_start_column + 1)
         logger.info("Removed purchasing_power_before/after columns from Purchases_Log")
 
+    def _add_original_message_columns(self, ws) -> None:
+        """Append original Slack message metadata columns without touching existing data."""
+        start_column = len(PURCHASE_LOG_HEADERS_PRE_ORIGINAL_MESSAGE) + 1
+        for offset, header in enumerate(PURCHASE_LOG_HEADERS[start_column - 1:]):
+            ws.update_cell(1, start_column + offset, header)
+        logger.info("Added original Slack message columns to Purchases_Log")
+
     def append_purchase_log(
         self,
         *,
@@ -832,6 +854,8 @@ class SheetsClient:
         subteam_available_before: float | None,
         receipt_link: str | None,
         bot_assessment: str,
+        original_channel_id: str,
+        original_message_ts: str,
     ) -> bool:
         """
         Append a new purchase request row to Purchases_Log.
@@ -866,6 +890,8 @@ class SheetsClient:
             bundle_line_number,
             "",  # subteam_purchasing_power_change (filled on approval/rejection)
             "",  # club_purchasing_power_change (filled on approval/rejection)
+            original_channel_id,
+            original_message_ts,
         ]
 
         try:
