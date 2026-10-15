@@ -87,12 +87,7 @@ def _is_user_in_usergroup(client, user_id: str | None, usergroup_id: str) -> boo
 
 
 # Slack member ID -> image path (relative to this file) sent when that member is mentioned.
-EASTER_EGG_IMAGES: dict[str, str] = {
-    "U09JM29RQ4C": "robot.jpg",
-    "U07PAF7S4D7": "arnold.png",
-    "U0AEDN6CN06": "arnold.png",
-    "U09J6LLEAF4": "arnold.png",
-}
+EASTER_EGG_IMAGES: dict[str, str] = {}
 
 
 def _send_easter_egg_if_triggered(event: dict[str, Any], client, settings: Settings | None = None) -> bool:

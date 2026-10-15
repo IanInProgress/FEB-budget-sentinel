@@ -14,6 +14,16 @@ def _map(monkeypatch):
     monkeypatch.setattr(app, "EASTER_EGG_IMAGES", {"UALICE": "image.png", "UBOB": "images/bob.png"})
 
 
+def test_no_members_are_configured_by_default():
+    assert app.EASTER_EGG_IMAGES == {}
+
+    client = FakeClient()
+    assert not _send_easter_egg_if_triggered(
+        {"channel": "C123", "ts": "111.222", "text": "Hey <@UBOB>"}, client
+    )
+    assert client.messages == []
+
+
 def test_posts_member_specific_image(monkeypatch):
     _map(monkeypatch)
     client = FakeClient()
