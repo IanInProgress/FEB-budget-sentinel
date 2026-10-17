@@ -41,6 +41,11 @@ from receipts import (
 from sheets_client import SheetsClient, SheetsClientError
 from utils import coerce_money, format_usd
 
+REIMBURSEMENT_INFO_LINE = (
+    "\n\n<https://cal-electric.slack.com/archives/C0C3QJRUPGA/p1791862526687319"
+    "|Don't forget to fill out the reimbursement form!>"
+)
+
 
 EXECUTOR = ThreadPoolExecutor(max_workers=4)
 PENDING_APPROVALS: dict[str, dict[str, Any]] = {}  # message_ts -> request metadata
@@ -724,6 +729,7 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                             f"*Approved Items:*\n{chr(10).join(approved_item_summaries)}\n\n"
                             f"*Rejected Items:*\n{chr(10).join(rejected_item_summaries)}\n\n"
                             "Items not listed in the manager's approval message were rejected."
+                            + REIMBURSEMENT_INFO_LINE
                         ),
                     )
                     bolt_app.client.chat_postMessage(
@@ -752,6 +758,7 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                             f"*Total Amount:* {format_usd(total_amount)}\n"
                             f"*Items:*\n{chr(10).join(approved_item_summaries)}\n\n"
                             f"The amount is now in Pending Spend."
+                            + REIMBURSEMENT_INFO_LINE
                         ),
                     )
                     if original_channel_id and original_message_ts:
