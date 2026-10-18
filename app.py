@@ -42,7 +42,8 @@ from sheets_client import SheetsClient, SheetsClientError
 from utils import coerce_money, format_usd
 
 REIMBURSEMENT_INFO_LINE = (
-    "\n\n<https://cal-electric.slack.com/archives/C0C3QJRUPGA/p1791862526687319"
+    "\n\n:rotating_light: *NEXT STEPS:* "
+    "<https://cal-electric.slack.com/archives/C0C3QJRUPGA/p1791862526687319"
     "|Don't forget to fill out the reimbursement form!>"
 )
 

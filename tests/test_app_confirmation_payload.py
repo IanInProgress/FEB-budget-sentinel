@@ -1,9 +1,15 @@
 import json
 
 from app import (
+    REIMBURSEMENT_INFO_LINE,
     SLACK_ACTION_VALUE_MAX_LENGTH,
     _serialize_confirmation_button_value,
 )
+
+
+def test_reimbursement_info_line_highlights_next_steps():
+    assert ":rotating_light: *NEXT STEPS:*" in REIMBURSEMENT_INFO_LINE
+    assert "|Don't forget to fill out the reimbursement form!>" in REIMBURSEMENT_INFO_LINE
 
 
 def test_confirmation_button_value_allows_slack_character_limit():
