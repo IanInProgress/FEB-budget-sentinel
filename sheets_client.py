@@ -5,6 +5,7 @@ import logging
 import re
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
 import gspread
 from gspread.exceptions import APIError, WorksheetNotFound
@@ -218,6 +219,7 @@ class PurchaseLogEntry:
     rejection_reason: str
     original_channel_id: str = ""
     original_message_ts: str = ""
+    submitted_at_utc: str = ""
 
 
 @dataclass(frozen=True)
@@ -255,6 +257,7 @@ def _row_to_purchase_log_entry(row: list[str]) -> PurchaseLogEntry:
         rejection_reason=(row[15] if len(row) > 15 else "").strip(),
         original_channel_id=(row[20] if len(row) > 20 else "").strip(),
         original_message_ts=(row[21] if len(row) > 21 else "").strip(),
+        submitted_at_utc=(row[1] if len(row) > 1 else "").strip(),
     )
 
 
@@ -1146,6 +1149,33 @@ class SheetsClient:
             entries.sort(key=lambda entry: entry.bundle_line_number)
 
         return entries_by_request_id
+
+    def get_purchase_log_entries_for_requester(
+        self,
+        *,
+        requester_id: str,
+        since: datetime,
+    ) -> list[PurchaseLogEntry]:
+        """
+        Read all rows submitted by requester_id on/after `since` (tz-aware), oldest first.
+        """
+        values = self._read_purchases_log_values_with_retry()
+        entries: list[PurchaseLogEntry] = []
+        for row in values[1:]:
+            if not row or len(row) < 5 or row[4].strip() != requester_id:
+                continue
+            try:
+                submitted = datetime.fromisoformat(row[1].strip())
+            except ValueError:
+                continue
+            if submitted.tzinfo is None:
+                submitted = submitted.replace(tzinfo=timezone.utc)
+            if submitted < since:
+                continue
+            entries.append(_row_to_purchase_log_entry(row))
+
+        entries.sort(key=lambda e: (e.submitted_at_utc, e.request_id, e.bundle_line_number))
+        return entries
 
     def _read_purchases_log_values_with_retry(self) -> list[list[str]]:
         """

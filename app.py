@@ -1371,6 +1371,50 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
             text=f"FEB Purchase Bot version: *{_get_bot_version()}*",
         )
 
+    @bolt_app.command("/requests")
+    def handle_requests_command(ack, body, client):
+        ack()
+
+        user_id = body.get("user_id")
+        channel_id = body.get("channel_id")
+        if not user_id or not channel_id:
+            return
+
+        def run_requests_lookup() -> None:
+            try:
+                now = datetime.now(timezone.utc)
+                try:
+                    since = now.replace(year=now.year - 1)
+                except ValueError:  # Feb 29
+                    since = now.replace(year=now.year - 1, day=28)
+                entries = sheets.get_purchase_log_entries_for_requester(
+                    requester_id=user_id, since=since
+                )
+                if not entries:
+                    text = "You have no purchase requests in the past year."
+                else:
+                    lines = [f"*Your purchase requests in the past year ({len(entries)} items):*"]
+                    for e in entries:
+                        date = e.submitted_at_utc[:10]
+                        ref = f" [{e.reference_id}]" if e.reference_id else ""
+                        lines.append(
+                            f"• {date} | `{e.request_id}` | {e.item_name} | "
+                            f"{format_usd(e.amount_usd)} | {e.status or 'N/A'}{ref}"
+                        )
+                    text = "\n".join(lines)
+                    if len(text) > 38000:
+                        text = text[:38000].rsplit("\n", 1)[0] + "\n…(truncated)"
+                client.chat_postEphemeral(channel=channel_id, user=user_id, text=text)
+            except Exception:
+                logger.exception("Failed to process /requests for user=%s", user_id)
+                client.chat_postEphemeral(
+                    channel=channel_id,
+                    user=user_id,
+                    text="Could not fetch your requests right now. Please try again.",
+                )
+
+        EXECUTOR.submit(run_requests_lookup)
+
     @bolt_app.command("/reference")
     def handle_reference_command(ack, body, client):
         ack()
