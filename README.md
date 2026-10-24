@@ -154,6 +154,8 @@ The bot automatically creates a `_Config` tab with:
 
 The bot automatically creates a `Purchases_Log` audit trail with 20 columns tracking all transactions, including bundle line numbers, explicit unaccounted-item status, and subteam budget snapshots before/after each change. Two columns, `subteam_purchasing_power_change` and `club_purchasing_power_change`, record the delta applied by the manager's decision — 0 for rejected requests, and the negative of the approved amount for approved requests. The club's overall purchasing power at any point is `SUM(club_purchasing_power_change)` across all rows (plus the club's starting balance before tracking began) — there's no separately-maintained running total in `_Config`, since that would just duplicate this column. Multi-item receipts are stored as multiple rows that share the same `request_id`.
 
+When the `company_name` column is added to an existing log, startup migration preserves all historical rows and leaves their company name blank. Rows that still use the pre-company column positions are automatically reorganized into the current layout.
+
 ### Reference ID Prefixes
 
 The bot uses the following reference ID prefixes to identify subteams:

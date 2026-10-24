@@ -268,6 +268,19 @@ def _row_to_purchase_log_entry(row: list[str]) -> PurchaseLogEntry:
     )
 
 
+def _normalize_purchase_log_row_for_company_name(row: list[str]) -> list[str] | None:
+    """Insert a blank company_name value into a pre-company-name row."""
+    if len(row) >= len(PURCHASE_LOG_HEADERS):
+        return None
+
+    if len(row) <= PURCHASE_LOG_HEADERS_PRE_COMPANY_NAME.index("purchase_reason"):
+        return None
+
+    normalized = [*row[:9], "", *row[9:]]
+    normalized.extend([""] * (len(PURCHASE_LOG_HEADERS) - len(normalized)))
+    return normalized[: len(PURCHASE_LOG_HEADERS)]
+
+
 class SheetsClient:
     """
     Sheets client for reading budget data and updating pending/actual spending.
@@ -647,6 +660,10 @@ class SheetsClient:
                     migrated = True
                     actual_headers = ws.row_values(1)
 
+                if actual_headers == expected_headers:
+                    migrated_rows = self._migrate_legacy_company_name_rows(ws)
+                    migrated = migrated or migrated_rows > 0
+
                 if actual_headers != expected_headers:
                     values = ws.get_all_values()
                     has_data = len(values) > 1
@@ -859,6 +876,36 @@ class SheetsClient:
         ws.insert_cols([[]], col=company_column)
         ws.update_cell(1, company_column, "company_name")
         logger.info("Added company_name column to Purchases_Log")
+
+    def _migrate_legacy_company_name_rows(self, ws) -> int:
+        """Repair rows that still use the pre-company-name column positions."""
+        try:
+            values = ws.get_all_values()
+        except Exception as e:
+            raise SheetsClientError("Failed to read Purchases_Log for row migration") from e
+
+        migrated_rows = 0
+        for row_number, row in enumerate(values[1:], start=2):
+            normalized = _normalize_purchase_log_row_for_company_name(row)
+            if normalized is None:
+                continue
+            try:
+                ws.update(
+                    values=[normalized],
+                    range_name=f"A{row_number}:W{row_number}",
+                )
+            except Exception as e:
+                raise SheetsClientError(
+                    f"Failed to migrate Purchases_Log row {row_number}"
+                ) from e
+            migrated_rows += 1
+
+        if migrated_rows:
+            logger.info(
+                "Migrated %d Purchases_Log row(s) to include company_name",
+                migrated_rows,
+            )
+        return migrated_rows
 
     def append_purchase_log(
         self,
