@@ -242,10 +242,10 @@ class ReimbursementResult:
 
 
 def _row_to_purchase_log_entry(row: list[str]) -> PurchaseLogEntry:
-    amount_raw = row[10] if len(row) > 10 else ""
+    amount_raw = row[11] if len(row) > 11 else ""
     amount = coerce_money(amount_raw, default=0.0)
     try:
-        bundle_line_number = int(row[17]) if len(row) > 17 and row[17] else 0
+        bundle_line_number = int(row[18]) if len(row) > 18 and row[18] else 0
     except ValueError:
         bundle_line_number = 0
     return PurchaseLogEntry(
@@ -962,9 +962,9 @@ class SheetsClient:
         for i, row in enumerate(values[1:], start=2):
             if len(row) > 0 and row[0] == request_id:
                 row_line_number = 0
-                if len(row) > 17:
+                if len(row) > 18:
                     try:
-                        row_line_number = int(row[17])
+                        row_line_number = int(row[18])
                     except ValueError:
                         row_line_number = 0
                 if bundle_line_number is None or row_line_number == bundle_line_number:
@@ -1104,9 +1104,9 @@ class SheetsClient:
 
         row_num = None
         for i, row in enumerate(values[1:], start=2):
-            if len(row) > 17 and row[0] == request_id:
+            if len(row) > 18 and row[0] == request_id:
                 try:
-                    row_line_number = int(row[17])
+                    row_line_number = int(row[18])
                 except ValueError:
                     continue
                 if row_line_number == bundle_line_number:
