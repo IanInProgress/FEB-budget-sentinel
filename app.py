@@ -985,8 +985,8 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
         submit_text = "Review"
         details_label = "Bundle Lines" if is_bulk_order else "Request Details"
         details_hint = (
-            "One item per line: reference_id, amount, reason" if is_bulk_order
-            else "Format: reference_id, amount, reason"
+            "One item per line: reference_id, amount, company name, reason" if is_bulk_order
+            else "Format: reference_id, amount, company name, reason"
         )
 
         client.views_open(
@@ -1524,7 +1524,7 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                 guide_text = (
                     "*How to use `/purchase`*\n"
                     "1. Run `/purchase` to open the request form\n"
-                    "2. Enter `reference_id, amount, reason`\n"
+                    "2. Enter `reference_id, amount, company name, reason`\n"
                     "3. Click *Review* to post your draft details\n"
                     "4. Upload your receipt image(s) or PDF(s) in the channel\n"
                     "5. Click *Confirm*"
@@ -1544,9 +1544,9 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                     "*Example*\n"
                     "```\n"
                     "/bigorder\n"
-                    "EECS-025, 42.50, Zipties\n"
-                    "EECS-010, 15.00, Ferrules\n"
-                    "ADMIN-000 Office Supplies, 50.00, Team workspace\n"
+                    "EECS-025, 42.50, Digi-Key, Zipties\n"
+                    "EECS-010, 15.00, McMaster-Carr, Ferrules\n"
+                    "ADMIN-000 Office Supplies, 50.00, Costco, Team workspace\n"
                     "```\n"
                     "All lines are logged under one Request ID."
                 )
@@ -1599,8 +1599,8 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                         "text": (
                             "*For unaccounted items*\n"
                             "Use a reference ID ending in `-000` when the item is not already listed in the budget. "
-                            "Include the item name after the reference ID, followed by the amount and reason.\n"
-                            "Format: `ADMIN-000 Item Name, amount, reason`"
+                            "Include the item name after the reference ID, followed by the amount, company name, and reason.\n"
+                            "Format: `ADMIN-000 Item Name, amount, company name, reason`"
                         ),
                     },
                 },
