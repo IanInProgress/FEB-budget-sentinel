@@ -84,6 +84,7 @@ PURCHASE_LOG_HEADERS_PRE_ORIGINAL_MESSAGE = [
     "subteam",
     "reference_id",
     "item_name",
+    "company_name",
     "purchase_reason",
     "amount_usd",
     "is_unaccounted",
@@ -101,6 +102,10 @@ PURCHASE_LOG_HEADERS = [
     *PURCHASE_LOG_HEADERS_PRE_ORIGINAL_MESSAGE,
     "original_channel_id",
     "original_message_ts",
+]
+
+PURCHASE_LOG_HEADERS_PRE_COMPANY_NAME = [
+    header for header in PURCHASE_LOG_HEADERS_PRE_ORIGINAL_MESSAGE if header != "company_name"
 ]
 
 SUBTEAM_PING_SUBSCRIBERS_TAB = "Subteam_Ping_Subscribers"
@@ -213,6 +218,7 @@ class PurchaseLogEntry:
     subteam: str
     reference_id: str
     item_name: str
+    company_name: str
     purchase_reason: str
     amount_usd: float
     is_unaccounted: bool
@@ -251,12 +257,13 @@ def _row_to_purchase_log_entry(row: list[str]) -> PurchaseLogEntry:
         subteam=(row[6] if len(row) > 6 else "").strip(),
         reference_id=(row[7] if len(row) > 7 else "").strip(),
         item_name=(row[8] if len(row) > 8 else "").strip(),
-        purchase_reason=(row[9] if len(row) > 9 else "").strip(),
+        company_name=(row[9] if len(row) > 9 else "").strip(),
+        purchase_reason=(row[10] if len(row) > 10 else "").strip(),
         amount_usd=float(amount),
-        is_unaccounted=((row[11] if len(row) > 11 else "").strip().lower() == "true"),
-        rejection_reason=(row[15] if len(row) > 15 else "").strip(),
-        original_channel_id=(row[20] if len(row) > 20 else "").strip(),
-        original_message_ts=(row[21] if len(row) > 21 else "").strip(),
+        is_unaccounted=((row[12] if len(row) > 12 else "").strip().lower() == "true"),
+        rejection_reason=(row[16] if len(row) > 16 else "").strip(),
+        original_channel_id=(row[21] if len(row) > 21 else "").strip(),
+        original_message_ts=(row[22] if len(row) > 22 else "").strip(),
         submitted_at_utc=(row[1] if len(row) > 1 else "").strip(),
     )
 
@@ -630,6 +637,11 @@ class SheetsClient:
                     migrated = True
                     actual_headers = ws.row_values(1)
 
+                if actual_headers == PURCHASE_LOG_HEADERS_PRE_COMPANY_NAME:
+                    self._add_company_name_column(ws)
+                    migrated = True
+                    actual_headers = ws.row_values(1)
+
                 if actual_headers == PURCHASE_LOG_HEADERS_PRE_ORIGINAL_MESSAGE:
                     self._add_original_message_columns(ws)
                     migrated = True
@@ -841,6 +853,13 @@ class SheetsClient:
             ws.update_cell(1, start_column + offset, header)
         logger.info("Added original Slack message columns to Purchases_Log")
 
+    def _add_company_name_column(self, ws) -> None:
+        """Insert the company column before purchase_reason without shifting row meaning."""
+        company_column = PURCHASE_LOG_HEADERS_PRE_COMPANY_NAME.index("purchase_reason") + 1
+        ws.insert_cols([[]], col=company_column)
+        ws.update_cell(1, company_column, "company_name")
+        logger.info("Added company_name column to Purchases_Log")
+
     def append_purchase_log(
         self,
         *,
@@ -851,6 +870,7 @@ class SheetsClient:
         subteam: str,
         reference_id: str,
         item_name: str,
+        company_name: str,
         purchase_reason: str,
         amount_usd: float,
         is_unaccounted: bool,
@@ -882,6 +902,7 @@ class SheetsClient:
             subteam,
             reference_id,
             item_name,
+            company_name,
             purchase_reason,
             amount_usd,
             str(bool(is_unaccounted)).lower(),

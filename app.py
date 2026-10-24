@@ -438,7 +438,8 @@ def _format_item_lines_for_message(items: list[dict[str, Any]]) -> str:
     parts = []
     for item in items:
         parts.append(
-            f"Item {item['line_number']}: {item['reference_id']} | {item['item_name']} | {format_usd(float(item['requested_amount']))}"
+            f"Item {item['line_number']}: {item['reference_id']} | {item['item_name']} | "
+            f"{item.get('company_name', '')} | {format_usd(float(item['requested_amount']))}"
         )
     return "\n".join(parts)
 
@@ -578,6 +579,7 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                         "subteam_tab": approval_data["subteam_tab"],
                         "reference_id": approval_data["reference_id"],
                         "item_name": approval_data["item_name"],
+                        "company_name": approval_data.get("company_name", ""),
                         "requested_amount": approval_data["requested_amount"],
                         "is_unaccounted": approval_data.get("is_unaccounted", False),
                         "reason": approval_data.get("purchase_reason", ""),
@@ -1066,7 +1068,8 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
         if is_bulk_order and parsed_bulk and parsed_bulk.ok:
             total_amount = sum(float(item.requested_amount or 0.0) for item in parsed_bulk.items)
             draft_lines = [
-                f"Item {item.line_number}: {item.reference_id} | {format_usd(float(item.requested_amount or 0.0))} | {item.reason}"
+                f"Item {item.line_number}: {item.reference_id} | {format_usd(float(item.requested_amount or 0.0))} | "
+                f"{item.company_name} | {item.reason}"
                 for item in parsed_bulk.items
             ]
             draft_text = (
@@ -1077,7 +1080,8 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
         elif parsed_single and parsed_single.ok:
             draft_text = (
                 f"Purchase request draft by <@{user_id}>\n"
-                f"{parsed_single.reference_id} | {format_usd(float(parsed_single.requested_amount or 0.0))} | {parsed_single.reason}"
+                f"{parsed_single.reference_id} | {format_usd(float(parsed_single.requested_amount or 0.0))} | "
+                f"{parsed_single.company_name} | {parsed_single.reason}"
             )
         else:
             draft_text = (
@@ -1191,6 +1195,7 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                             "subteam_tab": parsed.subteam_tab,
                             "item_name": item_name,
                             "requested_amount": parsed.requested_amount,
+                            "company_name": parsed.company_name,
                             "reason": parsed.reason,
                             "is_unaccounted": parsed.is_unaccounted,
                         }
@@ -2193,6 +2198,7 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                         {
                             "line_number": int(item["line_number"]),
                             "report": report,
+                            "company_name": str(item.get("company_name") or ""),
                             "reason": str(item["reason"]),
                             "raw_item": item,
                         }
@@ -2268,6 +2274,7 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                         only_item["report"],
                         user_id,
                         request_id=request_id,
+                        company_name=only_item["raw_item"].get("company_name"),
                         purchase_reason=only_item["reason"],
                         item_budget_reject_threshold_percent_of_estimate=settings.item_budget_reject_threshold_percent_of_estimate,
                     )
@@ -2353,6 +2360,7 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                         subteam=str(raw_item["subteam_tab"]),
                         reference_id=str(raw_item["reference_id"]),
                         item_name=str(raw_item["item_name"]),
+                        company_name=str(raw_item["company_name"]),
                         purchase_reason=str(raw_item["reason"]),
                         amount_usd=float(raw_item["requested_amount"]),
                         is_unaccounted=bool(raw_item.get("is_unaccounted", False)),

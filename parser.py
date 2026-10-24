@@ -43,9 +43,10 @@ REFERENCE_ID_PREFIX_TO_SPREADSHEET_ID = {
     "MECH": "1fO9CJElk0blio6DnT1a-BrrK2TxvQ7PZu3TWkDiH8wI",
 }
 
-# Match: [REF-ID Item Name], amount, reason  OR  [REF-ID], amount, reason
+# Match: [REF-ID Item Name], amount, company name, reason OR [REF-ID], amount, company name, reason
 _CMD_RE = re.compile(
-    r'^\s*(?P<ref_id>[A-Za-z0-9_-]+)(?:\s+(?P<item_name>[^,]+))?\s*,\s*(?P<amount>\$?-?\d+(?:\.\d+)?)\s*,\s*(?P<reason>.+?)\s*$'
+    r'^\s*(?P<ref_id>[A-Za-z0-9_-]+)(?:\s+(?P<item_name>[^,]+))?\s*,\s*'
+    r'(?P<amount>\$?-?\d+(?:\.\d+)?)\s*,\s*(?P<company_name>[^,]+?)\s*,\s*(?P<reason>.+?)\s*$'
 )
 
 
@@ -57,6 +58,7 @@ class ParseResult:
     reference_id: str | None
     subteam_tab: str | None
     requested_amount: float | None
+    company_name: str | None
     reason: str | None
     is_unaccounted: bool = False
     provided_item_name: str | None = None
@@ -74,10 +76,10 @@ class BulkOrderParseResult:
 def _single_item_usage(command_keyword: str) -> str:
     return (
         "Usage: Open the request form and enter:\n"
-        f"  {command_keyword} <reference_id>, <amount>, <reason>\n"
-        f"  Example: {command_keyword} ADMIN-001, 50.00, Need for supplies\n"
-        "  For unaccounted items: ADMIN-000 Item Name, <amount>, <reason>\n"
-        f"  Example: {command_keyword} ADMIN-000 Toilet Paper, 25.00, Need for office\n"
+        f"  {command_keyword} <reference_id>, <amount>, <company name>, <reason>\n"
+        f"  Example: {command_keyword} ADMIN-001, 50.00, Grainger, Need for supplies\n"
+        "  For unaccounted items: ADMIN-000 Item Name, <amount>, <company name>, <reason>\n"
+        f"  Example: {command_keyword} ADMIN-000 Toilet Paper, 25.00, Costco, Need for office\n"
         "  [After Review, upload receipt image in channel and click Confirm]"
     )
 
@@ -86,13 +88,13 @@ def _bulk_order_usage(command_keyword: str) -> str:
     return (
         "Usage: Open the request form and enter:\n"
         f"  {command_keyword}\n"
-        "  <reference_id>, <amount>, <reason>\n"
-        "  <reference_id>, <amount>, <reason>\n"
+        "  <reference_id>, <amount>, <company name>, <reason>\n"
+        "  <reference_id>, <amount>, <company name>, <reason>\n"
         "  ...\n"
         f"  Example:\n  {command_keyword}\n"
-        "  EECS-001, 20.00, Connectors\n"
-        "  EECS-010, 15.50, Ferrules\n"
-        "  EECS-000 New Bin, 12.00, Storage for parts\n"
+        "  EECS-001, 20.00, Digi-Key, Connectors\n"
+        "  EECS-010, 15.50, McMaster-Carr, Ferrules\n"
+        "  EECS-000 New Bin, 12.00, Grainger, Storage for parts\n"
         "  [After Review, upload receipt image in channel and click Confirm]"
     )
 
@@ -107,6 +109,7 @@ def parse_purchase_text(text: str, *, command_keyword: str = "command_purchase:"
             reference_id=None,
             subteam_tab=None,
             requested_amount=None,
+            company_name=None,
             reason=None,
         )
 
@@ -119,11 +122,13 @@ def parse_purchase_text(text: str, *, command_keyword: str = "command_purchase:"
             reference_id=None,
             subteam_tab=None,
             requested_amount=None,
+            company_name=None,
             reason=None,
         )
 
     ref_id = m.group("ref_id").strip().upper()
     amount_raw = m.group("amount").strip()
+    company_name = m.group("company_name").strip()
     reason = m.group("reason").strip()
     provided_item_name = m.group("item_name").strip() if m.group("item_name") else None
     
@@ -140,6 +145,7 @@ def parse_purchase_text(text: str, *, command_keyword: str = "command_purchase:"
             reference_id=None,
             subteam_tab=None,
             requested_amount=None,
+            company_name=None,
             reason=None,
         )
 
@@ -153,6 +159,7 @@ def parse_purchase_text(text: str, *, command_keyword: str = "command_purchase:"
             reference_id=None,
             subteam_tab=None,
             requested_amount=None,
+            company_name=None,
             reason=None,
         )
 
@@ -171,6 +178,7 @@ def parse_purchase_text(text: str, *, command_keyword: str = "command_purchase:"
             reference_id=None,
             subteam_tab=None,
             requested_amount=None,
+            company_name=None,
             reason=None,
         )
 
@@ -182,6 +190,7 @@ def parse_purchase_text(text: str, *, command_keyword: str = "command_purchase:"
             reference_id=None,
             subteam_tab=None,
             requested_amount=None,
+            company_name=None,
             reason=None,
         )
 
@@ -193,6 +202,7 @@ def parse_purchase_text(text: str, *, command_keyword: str = "command_purchase:"
             reference_id=None,
             subteam_tab=None,
             requested_amount=None,
+            company_name=None,
             reason=None,
         )
     
@@ -205,6 +215,7 @@ def parse_purchase_text(text: str, *, command_keyword: str = "command_purchase:"
             reference_id=None,
             subteam_tab=None,
             requested_amount=None,
+            company_name=None,
             reason=None,
         )
 
@@ -215,6 +226,7 @@ def parse_purchase_text(text: str, *, command_keyword: str = "command_purchase:"
         reference_id=ref_id,
         subteam_tab=subteam_tab,
         requested_amount=float(requested_amount),
+        company_name=company_name,
         reason=reason,
         is_unaccounted=is_unaccounted,
         provided_item_name=provided_item_name,
@@ -260,6 +272,7 @@ def parse_bulk_purchase_text(text: str, *, command_keyword: str = "bigorder:") -
                 reference_id=parsed.reference_id,
                 subteam_tab=parsed.subteam_tab,
                 requested_amount=parsed.requested_amount,
+                company_name=parsed.company_name,
                 reason=parsed.reason,
                 is_unaccounted=parsed.is_unaccounted,
                 provided_item_name=parsed.provided_item_name,
@@ -273,4 +286,3 @@ def parse_bulk_purchase_text(text: str, *, command_keyword: str = "bigorder:") -
         error_message=None,
         items=parsed_items,
     )
-

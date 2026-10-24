@@ -135,6 +135,7 @@ def format_manager_notification_blocks(
     report: BudgetReport,
     user_id: str,
     request_id: str | None = None,
+    company_name: str | None = None,
     purchase_reason: str | None = None,
     item_budget_reject_threshold_percent_of_estimate: float = 125.0,
 ) -> list[dict]:
@@ -162,6 +163,8 @@ def format_manager_notification_blocks(
 
     # Item name + purchase reason (full-width so long names don't get clipped)
     item_lines = [f"*Item:* {report.item_name}"]
+    if company_name:
+        item_lines.append(f"*Company:* {company_name}")
     if purchase_reason:
         item_lines.append(f"*Reason:* {purchase_reason}")
     blocks.append({
@@ -211,7 +214,7 @@ def format_manager_bundle_notification_blocks(
 ) -> list[dict]:
     """
     Format a multi-item purchase bundle for manager review.
-    Expects bundle_items with keys: line_number, report, reason.
+    Expects bundle_items with keys: line_number, report, company_name, reason.
     """
     item_headers = [
         _recommendation_header(item["report"], item_budget_reject_threshold_percent_of_estimate)
@@ -239,6 +242,7 @@ def format_manager_bundle_notification_blocks(
         report = item["report"]
         line_number = item["line_number"]
         reason = item.get("reason") or ""
+        company_name = item.get("company_name") or ""
 
         # Per-item sub-header: "Line 1 of 3 · ✅ Approve Recommended"
         blocks.append({
@@ -254,7 +258,10 @@ def format_manager_bundle_notification_blocks(
             "type": "section",
             "text": {
                 "type": "mrkdwn",
-                "text": f"`{report.reference_id}`  ·  *{format_usd(report.requested_amount)}*  ·  {report.item_name}",
+                "text": (
+                    f"`{report.reference_id}`  ·  *{format_usd(report.requested_amount)}*  ·  "
+                    f"{report.item_name}  ·  {company_name}"
+                ),
             },
         })
 
@@ -276,4 +283,3 @@ def format_manager_bundle_notification_blocks(
 
     blocks.append({"type": "divider"})
     return blocks
-

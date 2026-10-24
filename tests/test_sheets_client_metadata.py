@@ -2,10 +2,10 @@ from sheets_client import _row_to_purchase_log_entry
 
 
 def test_purchase_log_entry_reads_original_message_metadata():
-	row = [""] * 22
+	row = [""] * 23
 	row[0] = "REQ-000001"
-	row[20] = "C123"
-	row[21] = "123.456"
+	row[21] = "C123"
+	row[22] = "123.456"
 
 	entry = _row_to_purchase_log_entry(row)
 

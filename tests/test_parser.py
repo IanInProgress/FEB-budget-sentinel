@@ -8,23 +8,24 @@ from budget_checker import Status
 
 
 def test_parse_valid_basic():
-    r = parse_purchase_text('ADMIN-001, 50.00, Need supplies')
+    r = parse_purchase_text('ADMIN-001, 50.00, Grainger, Need supplies')
     assert r.ok is True
     assert r.reference_id == "ADMIN-001"
     assert r.subteam_tab == "Admin"
     assert abs(r.requested_amount - 50.0) < 1e-9
+    assert r.company_name == "Grainger"
     assert r.reason == "Need supplies"
 
 
 def test_parse_valid_case_insensitive():
-    r = parse_purchase_text('admin-001, 100.00, Test request')
+    r = parse_purchase_text('admin-001, 100.00, Grainger, Test request')
     assert r.ok is True
     assert r.reference_id == "ADMIN-001"
     assert r.subteam_tab == "Admin"
 
 
 def test_parse_with_dollar_sign():
-    r = parse_purchase_text('EECS-001, $75.50, Component purchase')
+    r = parse_purchase_text('EECS-001, $75.50, Digi-Key, Component purchase')
     assert r.ok is True
     assert r.reference_id == "EECS-001"
     assert abs(r.requested_amount - 75.50) < 1e-9
@@ -37,25 +38,25 @@ def test_parse_invalid_prefix():
 
 
 def test_parse_rejects_negative():
-    r = parse_purchase_text('ADMIN-001, -50, reason')
+    r = parse_purchase_text('ADMIN-001, -50, Company, reason')
     assert r.ok is False
     assert r.status == Status.INVALID_COMMAND
 
 
 def test_parse_rejects_zero():
-    r = parse_purchase_text('ADMIN-001, 0, reason')
+    r = parse_purchase_text('ADMIN-001, 0, Company, reason')
     assert r.ok is False
     assert r.status == Status.INVALID_COMMAND
 
 
 def test_parse_missing_reason():
-    r = parse_purchase_text('ADMIN-001, 50.00')
+    r = parse_purchase_text('ADMIN-001, 50.00, Company')
     assert r.ok is False
     assert r.status == Status.INVALID_COMMAND
 
 
 def test_parse_invalid_format():
-    r = parse_purchase_text('ADMIN-001 50.00 reason')
+    r = parse_purchase_text('ADMIN-001 50.00 Company reason')
     assert r.ok is False
     assert r.status == Status.INVALID_COMMAND
 
@@ -78,7 +79,7 @@ def test_parse_valid_all_subteams():
         ("MANU-001", "Manufacturing"),
     ]
     for ref_id, tab_name in subteams:
-        r = parse_purchase_text(f'{ref_id}, 100.00, test')
+        r = parse_purchase_text(f'{ref_id}, 100.00, Company, test')
         assert r.ok is True
         assert r.reference_id == ref_id
         assert r.subteam_tab == tab_name
@@ -91,7 +92,7 @@ def test_every_subteam_has_a_reference_spreadsheet_id():
 
 
 def test_parse_unaccounted_with_item_name():
-    r = parse_purchase_text('ADMIN-000 Toilet Paper, 25.00, Need for office')
+    r = parse_purchase_text('ADMIN-000 Toilet Paper, 25.00, Costco, Need for office')
     assert r.ok is True
     assert r.reference_id == "ADMIN-000"
     assert r.subteam_tab == "Admin"
@@ -102,14 +103,14 @@ def test_parse_unaccounted_with_item_name():
 
 
 def test_parse_unaccounted_without_item_name():
-    r = parse_purchase_text('EECS-000, 50.00, Some reason')
+    r = parse_purchase_text('EECS-000, 50.00, Company, Some reason')
     assert r.ok is False
     assert r.status == Status.INVALID_COMMAND
     assert "require an item name" in r.error_message.lower()
 
 
 def test_parse_regular_item_is_not_unaccounted():
-    r = parse_purchase_text('ADMIN-001, 50.00, Regular item')
+    r = parse_purchase_text('ADMIN-001, 50.00, Company, Regular item')
     assert r.ok is True
     assert r.is_unaccounted is False
     assert r.provided_item_name is None
@@ -117,7 +118,8 @@ def test_parse_regular_item_is_not_unaccounted():
 
 def test_parse_bulk_order_valid_multiple_lines():
     r = parse_bulk_purchase_text(
-        'EECS-001, 20.00, Connectors\nEECS-010, 15.50, Ferrules\nEECS-000 New Bin, 12.00, Storage'
+        'EECS-001, 20.00, Digi-Key, Connectors\nEECS-010, 15.50, McMaster-Carr, Ferrules\n'
+        'EECS-000 New Bin, 12.00, Grainger, Storage'
     )
     assert r.ok is True
     assert len(r.items) == 3
@@ -129,7 +131,6 @@ def test_parse_bulk_order_valid_multiple_lines():
 
 
 def test_parse_bulk_order_reports_line_error():
-    r = parse_bulk_purchase_text('EECS-001, 20.00, Connectors\nBADINPUT')
+    r = parse_bulk_purchase_text('EECS-001, 20.00, Digi-Key, Connectors\nBADINPUT')
     assert r.ok is False
     assert 'Line 2' in (r.error_message or '')
-

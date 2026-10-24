@@ -216,7 +216,7 @@ Each reference prefix maps to its own copied subteam spreadsheet. Google Drive s
    ```
 
    Tip: You can also include details after the command to prefill the form.
-   Example: `/purchase EECS-025, 42.50, Zipties for cable management`
+   Example: `/purchase EECS-025, 42.50, Digi-Key, Zipties for cable management`
 
 2. **Fill Out the Form**
 
@@ -229,28 +229,28 @@ Each reference prefix maps to its own copied subteam spreadsheet. Google Drive s
 
    **Single-item format:**
    ```
-   <reference_id>, <amount>, <reason>
+   <reference_id>, <amount>, <company name>, <reason>
    ```
 
    **Bigorder format:**
    ```
-   <reference_id>, <amount>, <reason>
-   <reference_id>, <amount>, <reason>
+   <reference_id>, <amount>, <company name>, <reason>
+   <reference_id>, <amount>, <company name>, <reason>
    ```
    
    **Examples for tracked single items:**
    ```
    /purchase
-   /purchase EECS-025, 42.50, Zipties for cable management
-   /purchase POWER-103, 150.00, Engine mount replacement
-   /purchase DYNA-008, 2500.00, New dampers for suspension
+   /purchase EECS-025, 42.50, Digi-Key, Zipties for cable management
+   /purchase POWER-103, 150.00, McMaster-Carr, Engine mount replacement
+   /purchase DYNA-008, 2500.00, Fox, New dampers for suspension
    ```
    
    **Example bulk order:**
    ```
-   /bigorder EECS-025, 42.50, Zipties for cable management
-   EECS-010, 15.00, Ferrules
-   ADMIN-000 Office Supplies, 50.00, Need for team workspace
+   /bigorder EECS-025, 42.50, Digi-Key, Zipties for cable management
+   EECS-010, 15.00, McMaster-Carr, Ferrules
+   ADMIN-000 Office Supplies, 50.00, Costco, Need for team workspace
    ```
    
    *Note: For unaccounted items (ending in -000), you must provide an item name after the reference ID*
@@ -434,7 +434,7 @@ Columns in your Google Sheet are protected. Fix:
 
 The command format is:
 ```
-/purchase <subteam>, <item name>, <amount>
+/purchase <reference_id>, <amount>, <company name>, <reason>
 ```
 
 Common mistakes:
