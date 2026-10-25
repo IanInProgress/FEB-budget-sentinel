@@ -1444,6 +1444,14 @@ class SheetsClient:
         except Exception as e:
             raise SheetsClientError(f"Failed to read tab values: {tab_name}") from e
 
+        # Find the last populated budget row in column A independently of any
+        # summary content elsewhere on the sheet.
+        last_budget_row = 1
+
+        for row_number, row in enumerate(values[1:], start=2):
+            if row and row[0].strip():
+                last_budget_row = row_number
+
         # Find the highest numeric suffix for this tab's reference IDs
         # E.g., if tab has ADMIN-001, ADMIN-012, find prefix and max number
         prefix = None
@@ -1475,19 +1483,28 @@ class SheetsClient:
         new_num = max_num + 1
         new_ref_id = f"{prefix}-{new_num:03d}"
         
-        # Append new row: [ref_id, item_name, estimated_budget, pending_spend, amount_reimbursed]
-        # Only pending_spend is populated; estimated_budget/reimbursed stay blank
-        # so the row doesn't show a negative computed budget.
-        new_row = [new_ref_id, item_name, "", initial_spending, ""]
-        
+        # Write only the budget columns so summary blocks in later columns do not
+        # affect placement. Estimated budget/reimbursed stay blank so the row
+        # doesn't show a negative computed budget.
+        new_row = [new_ref_id, item_name, "", initial_spending]
+        target_row = last_budget_row + 1
+
         try:
-            ws.append_row(new_row)
+            ws.update(
+                values=[new_row],
+                range_name=f"A{target_row}:D{target_row}",
+            )
             logger.info(
-                "Appended new budget line to tab %r: %s - %s (initial spending: %s)",
-                tab_name, new_ref_id, item_name, initial_spending
+                "Wrote new budget line to tab %r at row %s: %s - %s "
+                "(initial spending: %s)",
+                tab_name,
+                target_row,
+                new_ref_id,
+                item_name,
+                initial_spending,
             )
         except Exception as e:
-            raise SheetsClientError(f"Failed to append row to tab {tab_name}") from e
+            raise SheetsClientError(f"Failed to write row to tab {tab_name}") from e
         
         # Invalidate cache
         self._cache.pop(tab_name, None)
