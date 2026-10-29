@@ -134,6 +134,13 @@ def _required_approval_usergroup_ids(
     return ()
 
 
+def _should_notify_subteam_watchers(
+    approval_data: dict[str, Any],
+    settings: Settings,
+) -> bool:
+    return not _required_approval_usergroup_ids(approval_data, settings)
+
+
 def _approval_role_requirement_text(approval_data: dict[str, Any], settings: Settings) -> str | None:
     required_usergroup_ids = _required_approval_usergroup_ids(approval_data, settings)
     if not required_usergroup_ids:
@@ -1473,32 +1480,60 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                     if not cursor:
                         break
 
-                manager_mentions = " ".join(
-                    f"<!subteam^{usergroup_id}>"
-                    for usergroup_id in (
-                        settings.chief_usergroup_id,
-                        settings.president_vp_usergroup_id,
-                    )
-                )
                 reminded = 0
+                reminded_request_ids: list[str] = []
                 missing_threads: list[str] = []
-                for request_id in under_review:
+                try:
+                    subscribers = sheets.get_subteam_ping_subscribers()
+                except Exception:
+                    logger.exception("Failed to load subteam ping subscribers for /nudge")
+                    subscribers = {}
+
+                for request_id, entries in under_review.items():
                     thread_ts = request_threads.get(request_id)
                     if not thread_ts:
                         missing_threads.append(request_id)
                         continue
 
+                    approval_data = {
+                        "items": [
+                            {"requested_amount": entry.amount_usd}
+                            for entry in entries
+                        ]
+                    }
+                    if _should_notify_subteam_watchers(approval_data, settings):
+                        watcher_announcement = _build_subteam_ping_announcement(
+                            [{"subteam_tab": entry.subteam} for entry in entries],
+                            subscribers,
+                        )
+                        recipient_text = (
+                            watcher_announcement[0]
+                            if watcher_announcement
+                            else "Subteam watchers"
+                        )
+                    else:
+                        recipient_text = " ".join(
+                            f"<!subteam^{usergroup_id}>"
+                            for usergroup_id in _required_approval_usergroup_ids(
+                                approval_data,
+                                settings,
+                            )
+                        )
+
                     client.chat_postMessage(
                         channel=channel_id,
                         thread_ts=thread_ts,
                         text=(
-                            f"{manager_mentions} reminder: purchase request *{request_id}* "
+                            f"{recipient_text} reminder: purchase request *{request_id}* "
                             "is still waiting for a decision. Please approve or reject it in this thread."
                         ),
                     )
                     reminded += 1
+                    reminded_request_ids.append(request_id)
 
                 summary = f"Sent reminders for {reminded} purchase request(s)."
+                if reminded_request_ids:
+                    summary += " Reminded: " + ", ".join(sorted(reminded_request_ids)) + "."
                 if missing_threads:
                     summary += (
                         " Could not find manager threads for: "

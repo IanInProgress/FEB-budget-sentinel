@@ -6,6 +6,7 @@ from app import (
 	_parse_manager_decision_text,
 	_replace_purchase_request_reaction,
 	_required_approval_usergroup_ids,
+	_should_notify_subteam_watchers,
 )
 
 
@@ -118,6 +119,17 @@ def test_bundled_amount_selects_approval_role_tier():
 	assert _required_approval_usergroup_ids(
 		{"items": [{"requested_amount": 125}, {"requested_amount": 125.01}]}, settings
 	) == ("S_PRESIDENT_VP",)
+
+
+def test_subteam_watchers_are_only_notified_below_one_hundred_dollars():
+	settings = SimpleNamespace(
+		chief_usergroup_id="S_CHIEF",
+		president_vp_usergroup_id="S_PRESIDENT_VP",
+	)
+	assert _should_notify_subteam_watchers({"items": [{"requested_amount": 99.99}]}, settings)
+	assert not _should_notify_subteam_watchers({"items": [{"requested_amount": 100}]}, settings)
+	assert not _should_notify_subteam_watchers({"items": [{"requested_amount": 250}]}, settings)
+	assert not _should_notify_subteam_watchers({"items": [{"requested_amount": 250.01}]}, settings)
 
 
 def test_chief_and_executive_roles_must_authorize_approval_and_rejection():
