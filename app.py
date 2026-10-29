@@ -1513,10 +1513,27 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
     def handle_bigorder_request_modal(ack, body, client):
         _handle_purchase_modal_submission(ack, body, client, is_bulk_order=True)
 
-    def _build_tutorial_blocks(owner_id: str, selected: str) -> list[dict[str, Any]]:
-            selected_mode = selected if selected in {"purchase", "bigorder"} else "purchase"
-            purchase_value = json.dumps({"owner_id": owner_id, "selected": "purchase"})
-            bigorder_value = json.dumps({"owner_id": owner_id, "selected": "bigorder"})
+    def _build_tutorial_blocks(
+        owner_id: str,
+        selected: str,
+        *,
+        manager_tutorial: bool = False,
+    ) -> list[dict[str, Any]]:
+            manager_modes = {"reimbursement", "delete"}
+            valid_modes = {"purchase", "bigorder"} | (manager_modes if manager_tutorial else set())
+            selected_mode = selected if selected in valid_modes else "purchase"
+            purchase_value = json.dumps(
+                {"owner_id": owner_id, "selected": "purchase", "manager_tutorial": manager_tutorial}
+            )
+            bigorder_value = json.dumps(
+                {"owner_id": owner_id, "selected": "bigorder", "manager_tutorial": manager_tutorial}
+            )
+            reimbursement_value = json.dumps(
+                {"owner_id": owner_id, "selected": "reimbursement", "manager_tutorial": True}
+            )
+            delete_command_value = json.dumps(
+                {"owner_id": owner_id, "selected": "delete", "manager_tutorial": True}
+            )
             delete_value = json.dumps({"owner_id": owner_id})
 
             if selected_mode == "purchase":
@@ -1530,7 +1547,7 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                     "5. Click *Confirm*"
                 )
                 examples_text = ""
-            else:
+            elif selected_mode == "bigorder":
                 guide_title = "Help: /bigorder"
                 guide_text = (
                     "*How to use `/bigorder`*\n"
@@ -1550,6 +1567,26 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                     "```\n"
                     "All lines are logged under one Request ID."
                 )
+            elif selected_mode == "reimbursement":
+                guide_title = "Help: /reimburse (WIP)"
+                guide_text = (
+                    "*How to use `/reimburse`*\n"
+                    "This manager workflow is currently a work in progress.\n"
+                    "Run `/reimburse reference_id, amount` in the manager channel after reimbursement is completed.\n"
+                    "Example: `/reimburse ADMIN-013, 20`"
+                )
+                examples_text = ""
+            else:
+                guide_title = "Help: /delete"
+                guide_text = (
+                    "*How to use `/delete`*\n"
+                    "Run `/delete REQ-000003` in the manager channel to void a purchase request.\n"
+                    "The request must be approved or rejected first. Approved spend is reversed, "
+                    "bot-created empty lines are removed, and the request is marked `voided`.\n"
+                    "The original request's approval reaction is replaced with a trash icon.\n"
+                    "A request number alone also works, for example: `/delete 3`"
+                )
+                examples_text = ""
 
             return [
                 {
@@ -1580,6 +1617,26 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                             "action_id": "tutorial_help_bigorder",
                             "value": bigorder_value,
                         },
+                        *(
+                            [
+                                {
+                                    "type": "button",
+                                    "text": {"type": "plain_text", "text": "Reimbursement Help (WIP)"},
+                                    **({"style": "primary"} if selected_mode == "reimbursement" else {}),
+                                    "action_id": "tutorial_help_reimbursement",
+                                    "value": reimbursement_value,
+                                },
+                                {
+                                    "type": "button",
+                                    "text": {"type": "plain_text", "text": "Delete Help"},
+                                    **({"style": "primary"} if selected_mode == "delete" else {}),
+                                    "action_id": "tutorial_help_delete",
+                                    "value": delete_command_value,
+                                },
+                            ]
+                            if manager_tutorial
+                            else []
+                        ),
                     ],
                 },
                 {
@@ -1623,8 +1680,9 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                             "- Your request is sent to managers for review\n"
                             "- You receive a DM if approved or rejected\n"
                             "- If approved, amount is added to Pending Spend\n"
-                            "- Need reference IDs? Use `/reference`; to open a subteam sheet, use `/reference MECH-001`.\n"
-                            "- Use `/reimburse reference_id, amount` when reimbursement is completed"
+                            "- Need subteam acronyms? Use `/reference`, then use `/reference <ID prefix>` "
+                            "(for example, `/reference MECH`) to open that subteam's spreadsheet.\n"
+                            "- To view your recent purchase requests, use `/requests`."
                         ),
                     },
                 },
@@ -1652,7 +1710,11 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
         if not requester_id or not channel_id:
             return
 
-        blocks = _build_tutorial_blocks(requester_id, "purchase")
+        blocks = _build_tutorial_blocks(
+            requester_id,
+            "purchase",
+            manager_tutorial=channel_id == settings.manager_channel_id,
+        )
 
         client.chat_postMessage(
             channel=channel_id,
@@ -1689,7 +1751,12 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
             )
             return
 
-        blocks = _build_tutorial_blocks(owner_id, selected)
+        manager_tutorial = bool(payload.get("manager_tutorial")) and channel_id == settings.manager_channel_id
+        blocks = _build_tutorial_blocks(
+            owner_id,
+            selected,
+            manager_tutorial=manager_tutorial,
+        )
 
         try:
             client.chat_update(
@@ -1708,6 +1775,14 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
     @bolt_app.action("tutorial_help_bigorder")
     def handle_tutorial_help_bigorder(ack, body, client):
         _handle_tutorial_help_action(ack, body, client, "bigorder")
+
+    @bolt_app.action("tutorial_help_reimbursement")
+    def handle_tutorial_help_reimbursement(ack, body, client):
+        _handle_tutorial_help_action(ack, body, client, "reimbursement")
+
+    @bolt_app.action("tutorial_help_delete")
+    def handle_tutorial_help_delete(ack, body, client):
+        _handle_tutorial_help_action(ack, body, client, "delete")
 
     @bolt_app.action("delete_tutorial_message")
     def handle_delete_tutorial_message(ack, body, client):
