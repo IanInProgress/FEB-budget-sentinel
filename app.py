@@ -1816,18 +1816,39 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                         "text": {"type": "mrkdwn", "text": examples_text},
                     }
                 ] if examples_text else []),
-                {
-                    "type": "section",
-                    "text": {
-                        "type": "mrkdwn",
-                        "text": (
-                            "*For unaccounted items*\n"
-                            "Use a reference ID ending in `-000` when the item is not already listed in the budget. "
-                            "Include the item name after the reference ID, followed by the amount, company name, and reason.\n"
-                            "Format: `ADMIN-000 Item Name, amount, company name, reason`"
-                        ),
-                    },
-                },
+                *(
+                    [
+                        {
+                            "type": "section",
+                            "text": {
+                                "type": "mrkdwn",
+                                "text": (
+                                    "*For unaccounted items*\n"
+                                    "Use a reference ID ending in `-000` when the item is not already listed in the budget. "
+                                    "Include the item name after the reference ID, followed by the amount, company name, and reason.\n"
+                                    "Format: `ADMIN-000 Item Name, amount, company name, reason`"
+                                ),
+                            },
+                        },
+                        {
+                            "type": "section",
+                            "text": {
+                                "type": "mrkdwn",
+                                "text": (
+                                    "*What happens next*\n"
+                                    "- Your request is sent to managers for review\n"
+                                    "- You receive a DM if approved or rejected\n"
+                                    "- If approved, amount is added to Pending Spend\n"
+                                    "- Need subteam acronyms? Use `/reference`, then use `/reference <ID prefix>` "
+                                    "(for example, `/reference MECH`) to open that subteam's spreadsheet.\n"
+                                    "- To view your recent purchase requests, use `/requests`."
+                                ),
+                            },
+                        },
+                    ]
+                    if selected_mode in {"purchase", "bigorder"}
+                    else []
+                ),
                 {
                     "type": "section",
                     "text": {
@@ -1835,21 +1856,6 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                         "text": (
                             "*Receipt link tip*\n"
                             "No link paste needed. Upload receipt image(s) or PDF(s) after the draft appears, then click Confirm."
-                        ),
-                    },
-                },
-                {
-                    "type": "section",
-                    "text": {
-                        "type": "mrkdwn",
-                        "text": (
-                            "*What happens next*\n"
-                            "- Your request is sent to managers for review\n"
-                            "- You receive a DM if approved or rejected\n"
-                            "- If approved, amount is added to Pending Spend\n"
-                            "- Need subteam acronyms? Use `/reference`, then use `/reference <ID prefix>` "
-                            "(for example, `/reference MECH`) to open that subteam's spreadsheet.\n"
-                            "- To view your recent purchase requests, use `/requests`."
                         ),
                     },
                 },
