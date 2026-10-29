@@ -79,6 +79,7 @@ def _get_usergroup_member_ids(client, usergroup_id: str) -> set[str]:
         response = client.usergroups_users_list(usergroup=usergroup_id)
         member_ids = set(response.get("users") or [])
     except Exception:
+        logger = logging.getLogger("purchase_bot")
         logger.exception("Failed to fetch usergroup members for %s", usergroup_id)
         return cached[1] if cached else set()
 
@@ -1420,6 +1421,100 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
 
         EXECUTOR.submit(run_requests_lookup)
 
+    @bolt_app.command("/nudge")
+    def handle_nudge_command(ack, body, client):
+        ack()
+
+        user_id = body.get("user_id")
+        channel_id = body.get("channel_id")
+        if not user_id or not channel_id:
+            return
+
+        if channel_id != settings.manager_channel_id:
+            client.chat_postEphemeral(
+                channel=channel_id,
+                user=user_id,
+                text="Please run `/nudge` in the manager channel.",
+            )
+            return
+
+        def run_reminders() -> None:
+            try:
+                under_review = sheets.get_under_review_purchase_log_entries()
+                if not under_review:
+                    client.chat_postMessage(
+                        channel=channel_id,
+                        text="No purchase requests are currently waiting for a manager decision.",
+                    )
+                    return
+
+                request_threads: dict[str, str] = {}
+                cursor = None
+                while True:
+                    response = client.conversations_history(
+                        channel=channel_id,
+                        limit=100,
+                        **({"cursor": cursor} if cursor else {}),
+                    )
+                    for message in response.get("messages") or []:
+                        message_ts = (message.get("ts") or "").strip()
+                        if not message_ts:
+                            continue
+                        if message.get("thread_ts") and message.get("thread_ts") != message_ts:
+                            continue
+
+                        request_id = _extract_request_id_from_text(message.get("text"))
+                        if not request_id:
+                            request_id = _extract_request_id_from_blocks(message.get("blocks"))
+                        if request_id in under_review and request_id not in request_threads:
+                            request_threads[request_id] = message_ts
+
+                    cursor = (response.get("response_metadata") or {}).get("next_cursor")
+                    if not cursor:
+                        break
+
+                manager_mentions = " ".join(
+                    f"<!subteam^{usergroup_id}>"
+                    for usergroup_id in (
+                        settings.chief_usergroup_id,
+                        settings.president_vp_usergroup_id,
+                    )
+                )
+                reminded = 0
+                missing_threads: list[str] = []
+                for request_id in under_review:
+                    thread_ts = request_threads.get(request_id)
+                    if not thread_ts:
+                        missing_threads.append(request_id)
+                        continue
+
+                    client.chat_postMessage(
+                        channel=channel_id,
+                        thread_ts=thread_ts,
+                        text=(
+                            f"{manager_mentions} reminder: purchase request *{request_id}* "
+                            "is still waiting for a decision. Please approve or reject it in this thread."
+                        ),
+                    )
+                    reminded += 1
+
+                summary = f"Sent reminders for {reminded} purchase request(s)."
+                if missing_threads:
+                    summary += (
+                        " Could not find manager threads for: "
+                        + ", ".join(sorted(missing_threads))
+                        + "."
+                    )
+                client.chat_postMessage(channel=channel_id, text=summary)
+            except Exception:
+                logger.exception("Failed to process /nudge")
+                client.chat_postMessage(
+                    channel=channel_id,
+                    text="Could not scan pending purchase requests right now. Please try again.",
+                )
+
+        EXECUTOR.submit(run_reminders)
+
     @bolt_app.command("/reference")
     def handle_reference_command(ack, body, client):
         ack()
@@ -1519,7 +1614,7 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
         *,
         manager_tutorial: bool = False,
     ) -> list[dict[str, Any]]:
-            manager_modes = {"reimbursement", "delete"}
+            manager_modes = {"reimbursement", "delete", "nudge", "subteam-pings"}
             valid_modes = {"purchase", "bigorder"} | (manager_modes if manager_tutorial else set())
             selected_mode = selected if selected in valid_modes else "purchase"
             purchase_value = json.dumps(
@@ -1533,6 +1628,12 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
             )
             delete_command_value = json.dumps(
                 {"owner_id": owner_id, "selected": "delete", "manager_tutorial": True}
+            )
+            nudge_value = json.dumps(
+                {"owner_id": owner_id, "selected": "nudge", "manager_tutorial": True}
+            )
+            subteam_pings_value = json.dumps(
+                {"owner_id": owner_id, "selected": "subteam-pings", "manager_tutorial": True}
             )
             delete_value = json.dumps({"owner_id": owner_id})
 
@@ -1576,7 +1677,7 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                     "Example: `/reimburse ADMIN-013, 20`"
                 )
                 examples_text = ""
-            else:
+            elif selected_mode == "delete":
                 guide_title = "Help: /delete"
                 guide_text = (
                     "*How to use `/delete`*\n"
@@ -1585,6 +1686,23 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                     "bot-created empty lines are removed, and the request is marked `voided`.\n"
                     "The original request's approval reaction is replaced with a trash icon.\n"
                     "A request number alone also works, for example: `/delete 3`"
+                )
+                examples_text = ""
+            elif selected_mode == "nudge":
+                guide_title = "Help: /nudge"
+                guide_text = (
+                    "*How to use `/nudge`*\n"
+                    "Run `/nudge` in the manager channel to scan all purchase requests still under review.\n"
+                    "The bot pings the manager groups in each request thread that still needs a decision."
+                )
+                examples_text = ""
+            else:
+                guide_title = "Help: /subteam-pings"
+                guide_text = (
+                    "*How to use `/subteam-pings`*\n"
+                    "Manage optional watcher notifications for new purchase requests by subteam.\n"
+                    "Use `/subteam-pings add <prefix>` to subscribe, `/subteam-pings remove <prefix>` "
+                    "to unsubscribe, or `/subteam-pings list` to view your subscriptions."
                 )
                 examples_text = ""
 
@@ -1632,6 +1750,20 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                                     **({"style": "primary"} if selected_mode == "delete" else {}),
                                     "action_id": "tutorial_help_delete",
                                     "value": delete_command_value,
+                                },
+                                {
+                                    "type": "button",
+                                    "text": {"type": "plain_text", "text": "Remind Help"},
+                                    **({"style": "primary"} if selected_mode == "nudge" else {}),
+                                    "action_id": "tutorial_help_nudge",
+                                    "value": nudge_value,
+                                },
+                                {
+                                    "type": "button",
+                                    "text": {"type": "plain_text", "text": "Subteam Pings Help"},
+                                    **({"style": "primary"} if selected_mode == "subteam-pings" else {}),
+                                    "action_id": "tutorial_help_subteam_pings",
+                                    "value": subteam_pings_value,
                                 },
                             ]
                             if manager_tutorial
@@ -1784,6 +1916,14 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
     def handle_tutorial_help_delete(ack, body, client):
         _handle_tutorial_help_action(ack, body, client, "delete")
 
+    @bolt_app.action("tutorial_help_nudge")
+    def handle_tutorial_help_nudge(ack, body, client):
+        _handle_tutorial_help_action(ack, body, client, "nudge")
+
+    @bolt_app.action("tutorial_help_subteam_pings")
+    def handle_tutorial_help_subteam_pings(ack, body, client):
+        _handle_tutorial_help_action(ack, body, client, "subteam-pings")
+
     @bolt_app.action("delete_tutorial_message")
     def handle_delete_tutorial_message(ack, body, client):
         ack()
@@ -1797,7 +1937,7 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
             return
 
         try:
-            payload = json.loads(raw_value)
+            json.loads(raw_value)
         except Exception:
             logger.warning("Invalid delete_tutorial_message payload")
             return

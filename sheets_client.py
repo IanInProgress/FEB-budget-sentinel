@@ -1218,6 +1218,27 @@ class SheetsClient:
 
         return entries_by_request_id
 
+    def get_under_review_purchase_log_entries(self) -> dict[str, list[PurchaseLogEntry]]:
+        """
+        Read all purchase requests whose log rows are still under review.
+        """
+        values = self._read_purchases_log_values_with_retry()
+        entries_by_request_id: dict[str, list[PurchaseLogEntry]] = {}
+
+        for row in values[1:]:
+            if not row:
+                continue
+            entry = _row_to_purchase_log_entry(row)
+            if not entry.request_id:
+                continue
+            entries_by_request_id.setdefault(entry.request_id, []).append(entry)
+
+        return {
+            request_id: sorted(entries, key=lambda entry: entry.bundle_line_number)
+            for request_id, entries in entries_by_request_id.items()
+            if entries and all(entry.status == "under_review" for entry in entries)
+        }
+
     def get_purchase_log_entries_for_requester(
         self,
         *,
