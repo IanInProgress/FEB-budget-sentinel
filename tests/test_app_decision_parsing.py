@@ -3,6 +3,8 @@ from types import SimpleNamespace
 from app import (
 	_get_bot_version,
 	_is_authorized_manager_decision,
+	_edit_purchase_request_message,
+	_parse_move_purchase_request_command,
 	_parse_manager_decision_text,
 	_replace_purchase_request_reaction,
 	_required_approval_usergroup_ids,
@@ -52,6 +54,57 @@ def test_parse_manager_decision_accepts_shortcode_aliases():
 def test_parse_manager_decision_rejects_prose():
 	assert _parse_manager_decision_text("Please ✅") == (False, False, None)
 	assert _parse_manager_decision_text("Please :white_check_mark: this") == (False, False, None)
+
+
+def test_parse_move_purchase_request_command_normalizes_category_id():
+	assert _parse_move_purchase_request_command(" req-123 bno-003 ") == ("REQ-000123", "BNO-003")
+
+
+def test_parse_move_purchase_request_command_rejects_invalid_category_id():
+	for text in ("", "BNO-003", "REQ-123", "REQ-123 BNO", "REQ-123 BNO_003", "REQ-123 BNO-003 extra"):
+		try:
+			_parse_move_purchase_request_command(text)
+		except ValueError:
+			pass
+		else:
+			raise AssertionError(f"Expected invalid command text: {text!r}")
+
+
+def test_edit_purchase_request_message_updates_text_and_blocks():
+	calls = []
+	client = SimpleNamespace(
+		conversations_replies=lambda **kwargs: {
+			"messages": [
+				{
+					"text": "REQ-000001 | BNO-001 | Supplies",
+					"blocks": [
+						{"type": "section", "text": {"type": "mrkdwn", "text": "`BNO-001`"}}
+					],
+				}
+			]
+		},
+		chat_update=lambda **kwargs: calls.append(kwargs),
+	)
+
+	_edit_purchase_request_message(
+		client,
+		channel_id="C123",
+		message_ts="123.456",
+		old_reference_ids={"BNO-001"},
+		target_reference_id="EECS-003",
+		category_name="EECS",
+	)
+
+	assert calls == [
+		{
+			"channel": "C123",
+			"ts": "123.456",
+			"text": "REQ-000001 | EECS-003 | Supplies\n🔄 Moved to `EECS-003` in *EECS*.",
+			"blocks": [
+				{"type": "section", "text": {"type": "mrkdwn", "text": "`EECS-003`"}}
+			],
+		}
+	]
 
 
 def test_voiding_replaces_purchase_message_checkmark_with_trash_can():

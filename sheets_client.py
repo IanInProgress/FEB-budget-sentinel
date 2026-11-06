@@ -1176,6 +1176,69 @@ class SheetsClient:
             logger.error("Failed to update reference_id for %s line %s: %s", request_id, bundle_line_number, e)
             return False
 
+    def update_purchase_log_category(
+        self,
+        *,
+        request_id: str,
+        bundle_line_numbers: list[int],
+        subteam: str,
+        reference_id: str,
+    ) -> bool:
+        """Move all specified under-review purchase-log lines to a budget category."""
+        if not bundle_line_numbers:
+            return False
+
+        try:
+            ws = self._sh.worksheet("Purchases_Log")
+            values = ws.get_all_values()
+        except WorksheetNotFound as e:
+            raise SheetsClientError("Purchases_Log tab not found") from e
+        except Exception as e:
+            raise SheetsClientError("Failed to read Purchases_Log") from e
+
+        requested_lines = set(bundle_line_numbers)
+        row_nums: list[int] = []
+        for row_num, row in enumerate(values[1:], start=2):
+            if len(row) <= 18 or row[0] != request_id or row[3].strip() != "under_review":
+                continue
+            try:
+                line_number = int(row[18])
+            except ValueError:
+                continue
+            if line_number in requested_lines:
+                row_nums.append(row_num)
+
+        if len(row_nums) != len(requested_lines):
+            logger.warning(
+                "Could not move all lines for request %s: expected %s, found %s",
+                request_id,
+                len(requested_lines),
+                len(row_nums),
+            )
+            return False
+
+        try:
+            batch_data = []
+            for row_num in row_nums:
+                batch_data.extend(
+                    [
+                        {"range": f"G{row_num}", "values": [[subteam]]},
+                        {"range": f"H{row_num}", "values": [[reference_id]]},
+                    ]
+                )
+            ws.batch_update(batch_data)
+            logger.info(
+                "Moved request %s lines %s to %s/%s",
+                request_id,
+                sorted(requested_lines),
+                subteam,
+                reference_id,
+            )
+            return True
+        except Exception as e:
+            logger.error("Failed to move request %s to %s: %s", request_id, reference_id, e)
+            return False
+
     def get_purchase_log_entries(self, *, request_id: str) -> list[PurchaseLogEntry]:
         """
         Read all purchase request rows by request_id from Purchases_Log.
@@ -1543,9 +1606,10 @@ class SheetsClient:
     ) -> str:
         """
         Undo an approved purchase by subtracting its amount from Pending Spend (D).
-        When delete_if_empty is True (bot-created unaccounted lines), the row is deleted
-        if it has no budget, no pending spend, and no reimbursement left.
-        Returns "reversed", "deleted", or "not_found".
+        When delete_if_empty is True (bot-created unaccounted lines), columns A-E are
+        cleared if the line has no budget, no pending spend, and no reimbursement left.
+        Other columns and sheet rows are preserved. Returns "reversed", "cleared", or
+        "not_found".
         """
         try:
             ws = self._sh.worksheet(tab_name)
@@ -1577,8 +1641,11 @@ class SheetsClient:
 
         try:
             if delete_if_empty and not budget_raw and new_pending <= 0 and current_reimbursed <= 0:
-                ws.delete_rows(matched_row)
-                outcome = "deleted"
+                ws.update(
+                    values=[["", "", "", "", ""]],
+                    range_name=f"A{matched_row}:E{matched_row}",
+                )
+                outcome = "cleared"
             else:
                 ws.update_cell(matched_row, 4, new_pending)
                 outcome = "reversed"

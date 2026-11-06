@@ -474,6 +474,103 @@ def _parse_subteam_ping_command(text: str) -> tuple[str, str | None]:
     return action, prefix
 
 
+def _parse_move_purchase_request_command(text: str) -> tuple[str, str]:
+    parts = text.strip().split()
+    if len(parts) != 2:
+        raise ValueError("Usage: `/movePR <request ID> <correct item ID>` (example: `/movePR REQ-000123 BNO-003`).")
+
+    request_id = _normalize_request_id(parts[0])
+    target_reference_id = parts[1].upper()
+    if not request_id or not re.fullmatch(r"[A-Z]+-[A-Z0-9]+", target_reference_id):
+        raise ValueError("Usage: `/movePR <request ID> <correct item ID>` (example: `/movePR REQ-000123 BNO-003`).")
+    return request_id, target_reference_id
+
+
+def _replace_reference_ids_in_value(
+    value: Any,
+    old_reference_ids: set[str],
+    target_reference_id: str,
+) -> Any:
+    if isinstance(value, str):
+        updated = value
+        for old_reference_id in old_reference_ids:
+            updated = re.sub(
+                re.escape(old_reference_id),
+                target_reference_id,
+                updated,
+                flags=re.IGNORECASE,
+            )
+        return updated
+    if isinstance(value, list):
+        return [
+            _replace_reference_ids_in_value(item, old_reference_ids, target_reference_id)
+            for item in value
+        ]
+    if isinstance(value, dict):
+        return {
+            key: _replace_reference_ids_in_value(item, old_reference_ids, target_reference_id)
+            for key, item in value.items()
+        }
+    return value
+
+
+def _edit_purchase_request_message(
+    client,
+    *,
+    channel_id: str,
+    message_ts: str,
+    old_reference_ids: set[str],
+    target_reference_id: str,
+    category_name: str,
+) -> None:
+    replies = client.conversations_replies(
+        channel=channel_id,
+        ts=message_ts,
+        oldest=message_ts,
+        inclusive=True,
+        limit=1,
+    )
+    messages = replies.get("messages") or []
+    if not messages:
+        raise RuntimeError(f"Could not find purchase request message {channel_id}/{message_ts}")
+
+    message = messages[0]
+    updated_text = _replace_reference_ids_in_value(
+        message.get("text") or "",
+        old_reference_ids,
+        target_reference_id,
+    )
+    move_notice = f"\n🔄 Moved to `{target_reference_id}` in *{category_name}*."
+    if move_notice not in updated_text:
+        updated_text += move_notice
+
+    update_payload: dict[str, Any] = {
+        "channel": channel_id,
+        "ts": message_ts,
+        "text": updated_text,
+    }
+    if isinstance(message.get("blocks"), list):
+        update_payload["blocks"] = _replace_reference_ids_in_value(
+            message["blocks"],
+            old_reference_ids,
+            target_reference_id,
+        )
+    client.chat_update(**update_payload)
+
+
+def _find_manager_message_ts(client, manager_channel_id: str, request_id: str) -> str | None:
+    history = client.conversations_history(channel=manager_channel_id, limit=200)
+    for message in history.get("messages") or []:
+        message_ts = (message.get("ts") or "").strip()
+        if not message_ts:
+            continue
+        if message.get("thread_ts") and message.get("thread_ts") != message_ts:
+            continue
+        if request_id in (message.get("text") or "") or request_id in json.dumps(message.get("blocks") or []):
+            return message_ts
+    return None
+
+
 def _build_subteam_ping_announcement(
     items: list[dict[str, Any]],
     subscribers_by_prefix: dict[str, set[str]],
@@ -2050,6 +2147,152 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
 
         client.chat_postEphemeral(channel=channel_id, user=user_id, text=response_text)
 
+    @bolt_app.command("/movePR")
+    def handle_move_purchase_request_command(ack, body, client):
+        ack()
+
+        user_id = body.get("user_id")
+        channel_id = body.get("channel_id")
+        raw_text = (body.get("text") or "").strip()
+        if not user_id or not channel_id:
+            return
+
+        if channel_id != settings.manager_channel_id:
+            client.chat_postEphemeral(
+                channel=channel_id,
+                user=user_id,
+                text="Please run `/movePR` in the manager channel.",
+            )
+            return
+
+        try:
+            request_id, target_reference_id = _parse_move_purchase_request_command(raw_text)
+        except ValueError as e:
+            client.chat_postEphemeral(channel=channel_id, user=user_id, text=str(e))
+            return
+
+        prefix = target_reference_id.split("-", 1)[0]
+        target_tab = REFERENCE_ID_PREFIX_TO_TAB.get(prefix)
+        if not target_tab:
+            valid_prefixes = ", ".join(REFERENCE_ID_PREFIX_TO_TAB)
+            client.chat_postEphemeral(
+                channel=channel_id,
+                user=user_id,
+                text=f"Unknown category prefix `{prefix}`. Valid prefixes: {valid_prefixes}.",
+            )
+            return
+
+        def run_move() -> None:
+            try:
+                entries = sheets.get_purchase_log_entries(request_id=request_id)
+                if not entries:
+                    client.chat_postMessage(
+                        channel=channel_id,
+                        text=f"❌ Could not find `{request_id}`.",
+                    )
+                    return
+                if any(entry.status != "under_review" for entry in entries):
+                    client.chat_postMessage(
+                        channel=channel_id,
+                        text=f"❌ `{request_id}` is not currently open for review.",
+                    )
+                    return
+                target_lines = sheets.get_budget_lines(tab_name=target_tab, force_refresh=True)
+                target_line = next(
+                    (line for line in target_lines if line.reference_id.upper() == target_reference_id),
+                    None,
+                )
+                if target_line is None:
+                    client.chat_postMessage(
+                        channel=channel_id,
+                        text=f"❌ Could not find `{target_reference_id}` in *{target_tab}*.",
+                    )
+                    return
+
+                line_numbers = [entry.bundle_line_number for entry in entries]
+                if not sheets.update_purchase_log_category(
+                    request_id=request_id,
+                    bundle_line_numbers=line_numbers,
+                    subteam=target_tab,
+                    reference_id=target_reference_id,
+                ):
+                    client.chat_postMessage(
+                        channel=channel_id,
+                        text=f"❌ Could not move `{request_id}`. Its open purchase log was not changed.",
+                    )
+                    return
+
+                manager_thread_ts = next(
+                    (
+                        thread_ts
+                        for thread_ts, data in PENDING_APPROVALS.items()
+                        if data.get("request_id") == request_id
+                    ),
+                    None,
+                )
+                if not manager_thread_ts:
+                    manager_thread_ts = _find_manager_message_ts(
+                        client,
+                        settings.manager_channel_id,
+                        request_id,
+                    )
+                approval_data = PENDING_APPROVALS.get(manager_thread_ts or "")
+                if approval_data:
+                    items = approval_data.get("items")
+                    if isinstance(items, list):
+                        for item in items:
+                            item["subteam_tab"] = target_tab
+                            item["reference_id"] = target_reference_id
+                    else:
+                        approval_data["subteam_tab"] = target_tab
+                        approval_data["reference_id"] = target_reference_id
+
+                old_reference_ids = {entry.reference_id for entry in entries if entry.reference_id}
+                if manager_thread_ts:
+                    try:
+                        _edit_purchase_request_message(
+                            client,
+                            channel_id=settings.manager_channel_id,
+                            message_ts=manager_thread_ts,
+                            old_reference_ids=old_reference_ids,
+                            target_reference_id=target_reference_id,
+                            category_name=target_tab,
+                        )
+                    except Exception:
+                        logger.exception("Failed to edit manager purchase request %s", request_id)
+                original_channel_id = entries[0].original_channel_id
+                original_message_ts = entries[0].original_message_ts
+                if original_channel_id and original_message_ts:
+                    try:
+                        _edit_purchase_request_message(
+                            client,
+                            channel_id=original_channel_id,
+                            message_ts=original_message_ts,
+                            old_reference_ids=old_reference_ids,
+                            target_reference_id=target_reference_id,
+                            category_name=target_tab,
+                        )
+                    except Exception:
+                        logger.exception("Failed to edit original purchase request %s", request_id)
+
+                message = (
+                    f"🔄 `{request_id}` moved to `{target_reference_id}` in *{target_tab}* "
+                    f"by <@{user_id}>. All {len(entries)} open line(s) will use the new category."
+                )
+                client.chat_postMessage(
+                    channel=channel_id,
+                    thread_ts=manager_thread_ts,
+                    text=message,
+                ) if manager_thread_ts else client.chat_postMessage(channel=channel_id, text=message)
+            except Exception:
+                logger.exception("Failed to process /movePR for %s", target_reference_id)
+                client.chat_postMessage(
+                    channel=channel_id,
+                    text="❌ Failed to move the open purchase request. Please try again.",
+                )
+
+        EXECUTOR.submit(run_move)
+
     @bolt_app.command("/reimburse")
     def handle_reimburse_command(ack, body, client):
         ack()
@@ -2220,8 +2463,8 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                     except Exception:
                         logger.exception("Failed to reverse %s for %s", entry.reference_id, request_id)
                         outcome = "error"
-                    if outcome == "deleted":
-                        summaries.append(f"• {label} (budget line removed)")
+                    if outcome == "cleared":
+                        summaries.append(f"• {label} (unaccounted budget line cleared)")
                     elif outcome == "reversed":
                         summaries.append(f"• {label} (pending spend reduced)")
                     else:
