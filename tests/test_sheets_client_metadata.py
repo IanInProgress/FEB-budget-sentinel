@@ -1,4 +1,5 @@
 from sheets_client import (
+	SheetsClient,
 	_normalize_purchase_log_row_for_company_name,
 	_row_to_purchase_log_entry,
 )
@@ -14,6 +15,22 @@ def test_purchase_log_entry_reads_original_message_metadata():
 
 	assert entry.original_channel_id == "C123"
 	assert entry.original_message_ts == "123.456"
+
+
+def test_purchase_log_lookup_normalizes_request_id_whitespace_and_case():
+	worksheet = type(
+	    "Worksheet",
+	    (),
+	    {"get_all_values": lambda self: [["request_id"], [" req-000001 "]]},
+	)()
+	spreadsheet = type("Spreadsheet", (), {"worksheet": lambda self, _: worksheet})()
+	client = SheetsClient.__new__(SheetsClient)
+	client._sh = spreadsheet
+
+	entries = client.get_purchase_log_entries(request_id="REQ-000001")
+
+	assert len(entries) == 1
+	assert entries[0].request_id == " req-000001 "
 
 
 def test_older_purchase_log_rows_default_original_message_metadata():

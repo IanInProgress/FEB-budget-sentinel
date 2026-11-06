@@ -1197,9 +1197,11 @@ class SheetsClient:
             raise SheetsClientError("Failed to read Purchases_Log") from e
 
         requested_lines = set(bundle_line_numbers)
+        normalized_request_id = request_id.strip().upper()
         row_nums: list[int] = []
         for row_num, row in enumerate(values[1:], start=2):
-            if len(row) <= 18 or row[0] != request_id or row[3].strip() != "under_review":
+            row_request_id = (row[0] if row else "").strip().upper()
+            if len(row) <= 18 or row_request_id != normalized_request_id or row[3].strip() != "under_review":
                 continue
             try:
                 line_number = int(row[18])
@@ -1247,7 +1249,8 @@ class SheetsClient:
 
         entries: list[PurchaseLogEntry] = []
         for row in values[1:]:
-            if not row or row[0] != request_id:
+            row_request_id = (row[0] if row else "").strip().upper()
+            if row_request_id != request_id.strip().upper():
                 continue
             entries.append(_row_to_purchase_log_entry(row))
 
