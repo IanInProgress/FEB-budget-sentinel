@@ -477,12 +477,12 @@ def _parse_subteam_ping_command(text: str) -> tuple[str, str | None]:
 def _parse_move_purchase_request_command(text: str) -> tuple[str, str]:
     parts = text.strip().split()
     if len(parts) != 2:
-        raise ValueError("Usage: `/movePR <request ID> <correct item ID>` (example: `/movePR REQ-000123 BNO-003`).")
+        raise ValueError("Usage: `/movepr <request ID> <correct item ID>` (example: `/movepr REQ-000123 BNO-003`).")
 
     request_id = _normalize_request_id(parts[0])
     target_reference_id = parts[1].upper()
     if not request_id or not re.fullmatch(r"[A-Z]+-[A-Z0-9]+", target_reference_id):
-        raise ValueError("Usage: `/movePR <request ID> <correct item ID>` (example: `/movePR REQ-000123 BNO-003`).")
+        raise ValueError("Usage: `/movepr <request ID> <correct item ID>` (example: `/movepr REQ-000123 BNO-003`).")
     return request_id, target_reference_id
 
 
@@ -2147,7 +2147,7 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
 
         client.chat_postEphemeral(channel=channel_id, user=user_id, text=response_text)
 
-    @bolt_app.command("/movePR")
+    @bolt_app.command("/movepr")
     def handle_move_purchase_request_command(ack, body, client):
         ack()
 
@@ -2161,7 +2161,7 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
             client.chat_postEphemeral(
                 channel=channel_id,
                 user=user_id,
-                text="Please run `/movePR` in the manager channel.",
+                text="Please run `/movepr` in the manager channel.",
             )
             return
 
