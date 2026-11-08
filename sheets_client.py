@@ -1184,6 +1184,7 @@ class SheetsClient:
         subteam: str,
         reference_id: str,
         item_name: str,
+        is_unaccounted: bool,
         subteam_available_before: float | None,
         bot_assessment: str,
         line_updates: dict[int, tuple[str, float | None, str]] | None = None,
@@ -1241,6 +1242,7 @@ class SheetsClient:
                         {"range": f"G{row_num}", "values": [[subteam]]},
                         {"range": f"H{row_num}", "values": [[reference_id]]},
                         {"range": f"I{row_num}", "values": [[line_item_name]]},
+                        {"range": f"M{row_num}", "values": [[str(is_unaccounted).lower()]]},
                         {
                             "range": f"N{row_num}",
                             "values": [[line_available_before if line_available_before is not None else ""]],

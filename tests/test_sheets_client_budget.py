@@ -119,6 +119,7 @@ def test_update_purchase_log_category_updates_all_under_review_lines():
         subteam="B&O",
         reference_id="BNO-003",
         item_name="New item",
+        is_unaccounted=False,
         subteam_available_before=100.0,
         bot_assessment="✅ Approve Recommended",
         line_updates={
@@ -132,11 +133,13 @@ def test_update_purchase_log_category_updates_all_under_review_lines():
             {"range": "G2", "values": [["B&O"]]},
             {"range": "H2", "values": [["BNO-003"]]},
             {"range": "I2", "values": [["New item"]]},
+            {"range": "M2", "values": [["false"]]},
             {"range": "N2", "values": [[100.0]]},
             {"range": "S2", "values": [["✅ Approve Recommended"]]},
             {"range": "G3", "values": [["B&O"]]},
             {"range": "H3", "values": [["BNO-003"]]},
             {"range": "I3", "values": [["New item"]]},
+            {"range": "M3", "values": [["false"]]},
             {"range": "N3", "values": [[90.0]]},
             {"range": "S3", "values": [["⚠️ Consider Approval"]]},
         ]

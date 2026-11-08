@@ -87,6 +87,37 @@ def test_legacy_purchase_log_row_gets_blank_company_name_and_shifted_fields():
 	assert normalized[22] == "123.456"
 
 
+def test_update_purchase_log_category_persists_unaccounted_flag():
+	class Worksheet:
+	    def get_all_values(self):
+	        row = [""] * 23
+	        row[0] = "REQ-000001"
+	        row[3] = "under_review"
+	        row[18] = "1"
+	        return [["request_id"], row]
+
+	    def batch_update(self, updates):
+	        self.updates = updates
+
+	worksheet = Worksheet()
+	spreadsheet = type("Spreadsheet", (), {"worksheet": lambda self, _: worksheet})()
+	client = SheetsClient.__new__(SheetsClient)
+	client._sh = spreadsheet
+
+	assert client.update_purchase_log_category(
+	    request_id="REQ-000001",
+	    bundle_line_numbers=[1],
+	    subteam="BNO",
+	    reference_id="BNO-000",
+	    item_name="New item",
+	    is_unaccounted=True,
+	    subteam_available_before=100.0,
+	    bot_assessment="✅ RECOMMEND_APPROVE",
+	)
+
+	assert {"range": "M2", "values": [["true"]]} in worksheet.updates
+
+
 def test_current_purchase_log_row_is_not_migrated_again():
 	row = [""] * 23
 	row[10] = "Lab supplies"

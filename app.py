@@ -2341,6 +2341,7 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                     subteam=target_tab,
                     reference_id=target_reference_id,
                     item_name=moved_item_name or "",
+                    is_unaccounted=target_reference_id.endswith("-000"),
                     subteam_available_before=moved_reports[0].available_budget,
                     bot_assessment=_recommendation_header(
                         moved_reports[0],
@@ -2380,6 +2381,8 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                     else:
                         approval_data["subteam_tab"] = target_tab
                         approval_data["reference_id"] = target_reference_id
+                        approval_data["item_name"] = moved_item_name
+                        approval_data["is_unaccounted"] = target_reference_id.endswith("-000")
 
                 if len(entries) == 1:
                     blocks = format_manager_notification_blocks(
