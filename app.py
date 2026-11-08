@@ -8,6 +8,7 @@ import subprocess
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any
 
@@ -2294,12 +2295,19 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                         text=f"❌ Could not find `{request_id}`.",
                     )
                     return
-                if any(entry.status != "under_review" for entry in entries):
+                if any(entry.status not in {"under_review", "approved"} for entry in entries):
                     client.chat_postMessage(
                         channel=channel_id,
-                        text=f"❌ `{request_id}` is not currently open for review.",
+                        text=f"❌ `{request_id}` must be entirely under review or approved to move.",
                     )
                     return
+                if len({entry.status for entry in entries}) > 1:
+                    client.chat_postMessage(
+                        channel=channel_id,
+                        text=f"❌ `{request_id}` has mixed review statuses and cannot be moved.",
+                    )
+                    return
+                is_approved_move = entries[0].status == "approved"
                 target_lines = sheets.get_budget_lines(tab_name=target_tab, force_refresh=True)
                 target_line = next(
                     (line for line in target_lines if line.reference_id.upper() == target_reference_id),
@@ -2324,10 +2332,69 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                     )
                     moved_reports.append(report)
 
+                final_reference_ids: dict[int, str] = {}
+                unchanged_lines: set[int] = set()
+                if is_approved_move:
+                    for entry in entries:
+                        if (
+                            entry.subteam.upper() == target_tab.upper()
+                            and entry.reference_id.upper() == target_reference_id.upper()
+                            and entry.item_name == (moved_item_name or "")
+                            and entry.is_unaccounted == target_reference_id.endswith("-000")
+                        ):
+                            unchanged_lines.add(entry.bundle_line_number)
+                            continue
+                        outcome = sheets.reverse_approved_spending(
+                            tab_name=entry.subteam,
+                            reference_id=entry.reference_id,
+                            amount=entry.amount_usd,
+                            delete_if_empty=entry.is_unaccounted,
+                        )
+                        if outcome == "not_found":
+                            client.chat_postMessage(
+                                channel=channel_id,
+                                text=f"❌ Could not reverse `{entry.reference_id}` for `{request_id}`.",
+                            )
+                            return
+
+                    for entry, report in zip(entries, moved_reports):
+                        if entry.bundle_line_number in unchanged_lines:
+                            final_reference_ids[entry.bundle_line_number] = entry.reference_id
+                            continue
+                        if target_reference_id.endswith("-000"):
+                            final_reference_id = sheets.append_budget_line(
+                                tab_name=target_tab,
+                                item_name=moved_item_name or "",
+                                initial_spending=entry.amount_usd,
+                            )
+                            entry_reference_id = final_reference_id
+                        else:
+                            if not sheets.update_pending_spending_by_id(
+                                tab_name=target_tab,
+                                reference_id=target_reference_id,
+                                amount_to_add=entry.amount_usd,
+                            ):
+                                client.chat_postMessage(
+                                    channel=channel_id,
+                                    text=f"❌ Could not add spending to `{target_reference_id}` for `{request_id}`.",
+                                )
+                                return
+                            entry_reference_id = target_reference_id
+
+                        final_reference_ids[entry.bundle_line_number] = entry_reference_id
+
                 line_updates = {
                     entry.bundle_line_number: (
                         report.item_name,
-                        report.available_budget,
+                        (
+                            report.available_budget - entry.amount_usd
+                            if (
+                                is_approved_move
+                                and entry.bundle_line_number not in unchanged_lines
+                                and report.available_budget is not None
+                            )
+                            else report.available_budget
+                        ),
                         _recommendation_header(
                             report,
                             settings.item_budget_reject_threshold_percent_of_estimate,
@@ -2348,12 +2415,21 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                         settings.item_budget_reject_threshold_percent_of_estimate,
                     ),
                     line_updates=line_updates,
+                    allowed_statuses=("approved",) if is_approved_move else ("under_review",),
                 ):
                     client.chat_postMessage(
                         channel=channel_id,
-                        text=f"❌ Could not move `{request_id}`. Its open purchase log was not changed.",
+                        text=f"❌ Could not move `{request_id}`. Its purchase log was not changed.",
                     )
                     return
+
+                if is_approved_move and target_reference_id.endswith("-000"):
+                    for entry in entries:
+                        sheets.update_purchase_log_reference_id(
+                            request_id=request_id,
+                            bundle_line_number=entry.bundle_line_number,
+                            reference_id=final_reference_ids[entry.bundle_line_number],
+                        )
 
                 manager_thread_ts = next(
                     (
@@ -2374,19 +2450,38 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                     items = approval_data.get("items")
                     if isinstance(items, list):
                         for item in items:
+                            line_number = int(item.get("line_number", 0))
                             item["subteam_tab"] = target_tab
-                            item["reference_id"] = target_reference_id
+                            item["reference_id"] = (
+                                final_reference_ids.get(line_number, target_reference_id)
+                                if is_approved_move
+                                else target_reference_id
+                            )
                             item["item_name"] = moved_item_name
                             item["is_unaccounted"] = target_reference_id.endswith("-000")
                     else:
                         approval_data["subteam_tab"] = target_tab
-                        approval_data["reference_id"] = target_reference_id
+                        approval_data["reference_id"] = (
+                            next(iter(final_reference_ids.values()), target_reference_id)
+                            if is_approved_move
+                            else target_reference_id
+                        )
                         approval_data["item_name"] = moved_item_name
                         approval_data["is_unaccounted"] = target_reference_id.endswith("-000")
 
+                display_reports = [
+                    replace(
+                        report,
+                        reference_id=final_reference_ids.get(
+                            entry.bundle_line_number,
+                            report.reference_id,
+                        ),
+                    )
+                    for entry, report in zip(entries, moved_reports)
+                ]
                 if len(entries) == 1:
                     blocks = format_manager_notification_blocks(
-                        moved_reports[0],
+                        display_reports[0],
                         entries[0].requester_id,
                         request_id=request_id,
                         company_name=entries[0].company_name,
@@ -2398,11 +2493,11 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                         [
                             {
                                 "line_number": entry.bundle_line_number,
-                                "report": report,
+                                "report": display_report,
                                 "company_name": entry.company_name,
                                 "reason": entry.purchase_reason,
                             }
-                            for entry, report in zip(entries, moved_reports)
+                            for entry, report, display_report in zip(entries, moved_reports, display_reports)
                         ],
                         entries[0].requester_id,
                         request_id,
@@ -2434,7 +2529,8 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
 
                 message = (
                     f"🔄 `{request_id}` moved to `{target_reference_id}` in *{target_tab}* "
-                    f"by <@{user_id}>. All {len(entries)} open line(s) will use the new category."
+                    f"by <@{user_id}>. "
+                    f"{'All approved spending was moved.' if is_approved_move else 'All open line(s) will use the new category.'}"
                 )
                 client.chat_postMessage(
                     channel=channel_id,

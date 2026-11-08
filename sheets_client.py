@@ -1188,6 +1188,7 @@ class SheetsClient:
         subteam_available_before: float | None,
         bot_assessment: str,
         line_updates: dict[int, tuple[str, float | None, str]] | None = None,
+        allowed_statuses: tuple[str, ...] = ("under_review",),
     ) -> bool:
         """Move all specified under-review purchase-log lines to a budget category."""
         if not bundle_line_numbers:
@@ -1206,7 +1207,11 @@ class SheetsClient:
         row_nums: list[int] = []
         for row_num, row in enumerate(values[1:], start=2):
             row_request_id = (row[0] if row else "").strip().upper()
-            if len(row) <= 18 or row_request_id != normalized_request_id or row[3].strip() != "under_review":
+            if (
+                len(row) <= 18
+                or row_request_id != normalized_request_id
+                or row[3].strip() not in allowed_statuses
+            ):
                 continue
             try:
                 line_number = int(row[18])
