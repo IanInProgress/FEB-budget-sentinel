@@ -475,26 +475,33 @@ def _parse_subteam_ping_command(text: str) -> tuple[str, str | None]:
     return action, prefix
 
 
-def _parse_move_purchase_request_command(text: str) -> tuple[str, str, str | None]:
-    parts = [part.strip() for part in text.split(",", 1)]
-    if len(parts) != 2:
+def _parse_move_purchase_request_command(text: str) -> tuple[str, str, str | None, int | None]:
+    parts = [part.strip() for part in text.split(",")]
+    if len(parts) < 2:
         raise ValueError(
-            "Usage: `/movepr REQ-000123, BNO-003` or `/movepr REQ-000123, BNO-000 New item`."
+            "Usage: `/movepr REQ-000123, BNO-003[, line]` or `/movepr REQ-000123, BNO-000 New item[, line]`."
         )
 
     request_id = _normalize_request_id(parts[0])
-    target_parts = parts[1].split(None, 1)
+    line_number = None
+    target_parts_text = ", ".join(parts[1:])
+    if len(parts) > 2 and parts[-1].isdigit():
+        line_number = int(parts[-1])
+        target_parts_text = ", ".join(parts[1:-1]).strip()
+    target_parts = target_parts_text.split(None, 1)
     target_reference_id = target_parts[0].upper() if target_parts else ""
     target_item_name = target_parts[1].strip() if len(target_parts) == 2 else None
+    if line_number is not None and line_number < 1:
+        raise ValueError("The optional line number must be a positive integer.")
     if not request_id or not re.fullmatch(r"[A-Z]+-[A-Z0-9]+", target_reference_id):
         raise ValueError(
-            "Usage: `/movepr REQ-000123, BNO-003` or `/movepr REQ-000123, BNO-000 New item`."
+            "Usage: `/movepr REQ-000123, BNO-003[, line]` or `/movepr REQ-000123, BNO-000 New item[, line]`."
         )
     if target_reference_id.endswith("-000") and not target_item_name:
         raise ValueError("Unaccounted move targets must include an item name, e.g. `BNO-000 New item`.")
     if not target_reference_id.endswith("-000") and target_item_name:
         raise ValueError("Existing budget targets must not include an item name.")
-    return request_id, target_reference_id, target_item_name
+    return request_id, target_reference_id, target_item_name, line_number
 
 
 def _replace_reference_ids_in_value(
@@ -1880,6 +1887,9 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                     "Run it in the manager channel using one of these formats:\n"
                     "`/movepr REQ-000123, BNO-003` for an existing budget line\n"
                     "`/movepr REQ-000123, BNO-000 New item` for an unaccounted item\n"
+                    "For a multi-item `/bigorder`, add the line number: "
+                    "`/movepr REQ-000123, BNO-003, 1`.\n"
+                    "Only multi-item requests use a line number; it is required to identify the `/bigorder` line.\n"
                     "The request must still be under review. Existing budget targets must already be listed; "
                     "unaccounted `-000` targets require an item name."
                 )
@@ -2256,7 +2266,7 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                                 "initial_value": raw_text,
                                 "placeholder": {
                                     "type": "plain_text",
-                                    "text": "REQ-000123, BNO-003 or REQ-000123, BNO-000 New item",
+                                    "text": "REQ-000123, BNO-003[, line] or REQ-000123, BNO-000 New item[, line]",
                                 },
                             },
                             "hint": {
@@ -2270,7 +2280,9 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
             return
 
         try:
-            request_id, target_reference_id, target_item_name = _parse_move_purchase_request_command(raw_text)
+            request_id, target_reference_id, target_item_name, requested_line_number = (
+                _parse_move_purchase_request_command(raw_text)
+            )
         except ValueError as e:
             client.chat_postEphemeral(channel=channel_id, user=user_id, text=str(e))
             return
@@ -2305,6 +2317,35 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                     client.chat_postMessage(
                         channel=channel_id,
                         text=f"❌ `{request_id}` has mixed review statuses and cannot be moved.",
+                    )
+                    return
+                if requested_line_number is not None and len(entries) == 1:
+                    client.chat_postMessage(
+                        channel=channel_id,
+                        text=(
+                            f"❌ `{request_id}` has only one purchase line. "
+                            "Do not include a line number for a normal `/purchase` request."
+                        ),
+                    )
+                    return
+                if requested_line_number is None and len(entries) > 1:
+                    client.chat_postMessage(
+                        channel=channel_id,
+                        text=(
+                            f"❌ `{request_id}` has multiple purchases. "
+                            "Include the line number, e.g. `/movepr REQ-000123, BNO-003, 1`."
+                        ),
+                    )
+                    return
+                entries = (
+                    [entry for entry in entries if entry.bundle_line_number == requested_line_number]
+                    if requested_line_number is not None
+                    else entries
+                )
+                if not entries:
+                    client.chat_postMessage(
+                        channel=channel_id,
+                        text=f"❌ Line {requested_line_number} was not found in `{request_id}`.",
                     )
                     return
                 is_approved_move = entries[0].status == "approved"
@@ -2450,6 +2491,8 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                     items = approval_data.get("items")
                     if isinstance(items, list):
                         for item in items:
+                            if int(item.get("line_number", 0)) != entries[0].bundle_line_number:
+                                continue
                             line_number = int(item.get("line_number", 0))
                             item["subteam_tab"] = target_tab
                             item["reference_id"] = (

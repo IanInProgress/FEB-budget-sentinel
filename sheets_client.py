@@ -1636,10 +1636,11 @@ class SheetsClient:
     ) -> str:
         """
         Undo an approved purchase by subtracting its amount from Pending Spend (D).
-        When delete_if_empty is True (bot-created unaccounted lines), columns A-E are
+        When delete_if_empty is True (bot-created unaccounted lines), columns A-F are
         cleared if the line has no budget, no pending spend, and no reimbursement left.
-        Other columns and sheet rows are preserved. Returns "reversed", "cleared", or
-        "not_found".
+        This also clears the item-level available-budget cell so the blank row does not
+        retain a visible zero. Other columns and sheet rows are preserved. Returns
+        "reversed", "cleared", or "not_found".
         """
         try:
             ws = self._sh.worksheet(tab_name)
@@ -1672,8 +1673,8 @@ class SheetsClient:
         try:
             if delete_if_empty and not budget_raw and new_pending <= 0 and current_reimbursed <= 0:
                 ws.update(
-                    values=[["", "", "", "", ""]],
-                    range_name=f"A{matched_row}:E{matched_row}",
+                    values=[["", "", "", "", "", ""]],
+                    range_name=f"A{matched_row}:F{matched_row}",
                 )
                 outcome = "cleared"
             else:

@@ -64,8 +64,16 @@ def test_append_budget_line_writes_after_last_reference_id_row():
 def test_reverse_unaccounted_spending_clears_only_budget_columns():
     worksheet = FakeWorksheet(
         [
-            ["Reference ID", "Specific Items", "Estimated Cost", "Pending Spend", "Amount Reimbursed", "Notes"],
-            ["ADMIN-013", "Temporary item", "", "25", "", "Preserve this"],
+            [
+                "Reference ID",
+                "Specific Items",
+                "Estimated Cost",
+                "Pending Spend",
+                "Amount Reimbursed",
+                "Available Budget",
+                "Notes",
+            ],
+            ["ADMIN-013", "Temporary item", "", "25", "", "0", "Preserve this"],
         ]
     )
     client = make_client(worksheet)
@@ -78,8 +86,8 @@ def test_reverse_unaccounted_spending_clears_only_budget_columns():
     )
 
     assert outcome == "cleared"
-    assert worksheet.updated == [([["", "", "", "", ""]], "A2:E2")]
-    assert worksheet.values[1][5] == "Preserve this"
+    assert worksheet.updated == [([["", "", "", "", "", ""]], "A2:F2")]
+    assert worksheet.values[1][6] == "Preserve this"
 
 
 def test_reverse_regular_spending_does_not_clear_item_id_or_name():

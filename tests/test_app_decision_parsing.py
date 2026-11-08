@@ -57,11 +57,24 @@ def test_parse_manager_decision_rejects_prose():
 
 
 def test_parse_move_purchase_request_command_normalizes_category_id():
-	assert _parse_move_purchase_request_command(" req-123, bno-003 ") == ("REQ-000123", "BNO-003", None)
+	assert _parse_move_purchase_request_command(" req-123, bno-003 ") == ("REQ-000123", "BNO-003", None, None)
 	assert _parse_move_purchase_request_command("REQ-000123, BNO-000 test") == (
 		"REQ-000123",
 		"BNO-000",
 		"test",
+		None,
+	)
+	assert _parse_move_purchase_request_command("REQ-000123, BNO-003, 1") == (
+		"REQ-000123",
+		"BNO-003",
+		None,
+		1,
+	)
+	assert _parse_move_purchase_request_command("REQ-000123, BNO-000 Office, supplies, 1") == (
+		"REQ-000123",
+		"BNO-000",
+		"Office, supplies",
+		1,
 	)
 
 
@@ -74,6 +87,8 @@ def test_parse_move_purchase_request_command_rejects_invalid_category_id():
 		"REQ-123, BNO_003",
 		"REQ-123, BNO-003 extra",
 		"REQ-123, BNO-000",
+		"REQ-123, BNO-003, 0",
+		"REQ-123, BNO-003, first",
 	):
 		try:
 			_parse_move_purchase_request_command(text)
