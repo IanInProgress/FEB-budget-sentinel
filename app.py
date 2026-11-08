@@ -1786,7 +1786,7 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
         *,
         manager_tutorial: bool = False,
     ) -> list[dict[str, Any]]:
-            manager_modes = {"reimbursement", "delete", "nudge", "subteam-pings"}
+            manager_modes = {"reimbursement", "delete", "nudge", "subteam-pings", "movepr"}
             valid_modes = {"purchase", "bigorder"} | (manager_modes if manager_tutorial else set())
             selected_mode = selected if selected in valid_modes else "purchase"
             purchase_value = json.dumps(
@@ -1806,6 +1806,9 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
             )
             subteam_pings_value = json.dumps(
                 {"owner_id": owner_id, "selected": "subteam-pings", "manager_tutorial": True}
+            )
+            movepr_value = json.dumps(
+                {"owner_id": owner_id, "selected": "movepr", "manager_tutorial": True}
             )
             delete_value = json.dumps({"owner_id": owner_id})
 
@@ -1866,6 +1869,18 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                     "*How to use `/nudge`*\n"
                     "Run `/nudge` in the manager channel to scan all purchase requests still under review.\n"
                     "The bot pings the manager groups in each request thread that still needs a decision."
+                )
+                examples_text = ""
+            elif selected_mode == "movepr":
+                guide_title = "Help: /movepr"
+                guide_text = (
+                    "*How to use `/movepr`*\n"
+                    "Move an open purchase request to a different budget category before approving or rejecting it.\n"
+                    "Run it in the manager channel using one of these formats:\n"
+                    "`/movepr REQ-000123, BNO-003` for an existing budget line\n"
+                    "`/movepr REQ-000123, BNO-000 New item` for an unaccounted item\n"
+                    "The request must still be under review. Existing budget targets must already be listed; "
+                    "unaccounted `-000` targets require an item name."
                 )
                 examples_text = ""
             else:
@@ -1936,6 +1951,13 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                                     **({"style": "primary"} if selected_mode == "subteam-pings" else {}),
                                     "action_id": "tutorial_help_subteam_pings",
                                     "value": subteam_pings_value,
+                                },
+                                {
+                                    "type": "button",
+                                    "text": {"type": "plain_text", "text": "Move PR Help"},
+                                    **({"style": "primary"} if selected_mode == "movepr" else {}),
+                                    "action_id": "tutorial_help_movepr",
+                                    "value": movepr_value,
                                 },
                             ]
                             if manager_tutorial
@@ -2101,6 +2123,10 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
     @bolt_app.action("tutorial_help_subteam_pings")
     def handle_tutorial_help_subteam_pings(ack, body, client):
         _handle_tutorial_help_action(ack, body, client, "subteam-pings")
+
+    @bolt_app.action("tutorial_help_movepr")
+    def handle_tutorial_help_movepr(ack, body, client):
+        _handle_tutorial_help_action(ack, body, client, "movepr")
 
     @bolt_app.action("delete_tutorial_message")
     def handle_delete_tutorial_message(ack, body, client):
