@@ -1183,6 +1183,10 @@ class SheetsClient:
         bundle_line_numbers: list[int],
         subteam: str,
         reference_id: str,
+        item_name: str,
+        subteam_available_before: float | None,
+        bot_assessment: str,
+        line_updates: dict[int, tuple[str, float | None, str]] | None = None,
     ) -> bool:
         """Move all specified under-review purchase-log lines to a budget category."""
         if not bundle_line_numbers:
@@ -1222,10 +1226,26 @@ class SheetsClient:
         try:
             batch_data = []
             for row_num in row_nums:
+                line_number = next(
+                    int(row[18])
+                    for row in values[row_num - 1 : row_num]
+                    if len(row) > 18
+                )
+                line_item_name, line_available_before, line_assessment = (
+                    line_updates.get(line_number, (item_name, subteam_available_before, bot_assessment))
+                    if line_updates
+                    else (item_name, subteam_available_before, bot_assessment)
+                )
                 batch_data.extend(
                     [
                         {"range": f"G{row_num}", "values": [[subteam]]},
                         {"range": f"H{row_num}", "values": [[reference_id]]},
+                        {"range": f"I{row_num}", "values": [[line_item_name]]},
+                        {
+                            "range": f"N{row_num}",
+                            "values": [[line_available_before if line_available_before is not None else ""]],
+                        },
+                        {"range": f"S{row_num}", "values": [[line_assessment]]},
                     ]
                 )
             ws.batch_update(batch_data)

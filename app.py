@@ -474,16 +474,26 @@ def _parse_subteam_ping_command(text: str) -> tuple[str, str | None]:
     return action, prefix
 
 
-def _parse_move_purchase_request_command(text: str) -> tuple[str, str]:
-    parts = text.strip().split()
+def _parse_move_purchase_request_command(text: str) -> tuple[str, str, str | None]:
+    parts = [part.strip() for part in text.split(",", 1)]
     if len(parts) != 2:
-        raise ValueError("Usage: `/movepr <request ID> <correct item ID>` (example: `/movepr REQ-000123 BNO-003`).")
+        raise ValueError(
+            "Usage: `/movepr REQ-000123, BNO-003` or `/movepr REQ-000123, BNO-000 New item`."
+        )
 
     request_id = _normalize_request_id(parts[0])
-    target_reference_id = parts[1].upper()
+    target_parts = parts[1].split(None, 1)
+    target_reference_id = target_parts[0].upper() if target_parts else ""
+    target_item_name = target_parts[1].strip() if len(target_parts) == 2 else None
     if not request_id or not re.fullmatch(r"[A-Z]+-[A-Z0-9]+", target_reference_id):
-        raise ValueError("Usage: `/movepr <request ID> <correct item ID>` (example: `/movepr REQ-000123 BNO-003`).")
-    return request_id, target_reference_id
+        raise ValueError(
+            "Usage: `/movepr REQ-000123, BNO-003` or `/movepr REQ-000123, BNO-000 New item`."
+        )
+    if target_reference_id.endswith("-000") and not target_item_name:
+        raise ValueError("Unaccounted move targets must include an item name, e.g. `BNO-000 New item`.")
+    if not target_reference_id.endswith("-000") and target_item_name:
+        raise ValueError("Existing budget targets must not include an item name.")
+    return request_id, target_reference_id, target_item_name
 
 
 def _replace_reference_ids_in_value(
@@ -1740,6 +1750,36 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
     def handle_bigorder_request_modal(ack, body, client):
         _handle_purchase_modal_submission(ack, body, client, is_bulk_order=True)
 
+    @bolt_app.view("move_purchase_request_modal")
+    def handle_move_purchase_request_modal(ack, body, client):
+        view = body.get("view") or {}
+        state_values = ((view.get("state") or {}).get("values") or {})
+        raw_text = (
+            ((state_values.get("move_command_text_block") or {}).get("move_command_text_input") or {}).get("value")
+            or ""
+        ).strip()
+        try:
+            _parse_move_purchase_request_command(raw_text)
+        except ValueError as e:
+            ack(response_action="errors", errors={"move_command_text_block": str(e)})
+            return
+
+        ack()
+        try:
+            metadata = json.loads(view.get("private_metadata") or "{}")
+        except json.JSONDecodeError:
+            logger.warning("Invalid move purchase modal private metadata")
+            return
+        handle_move_purchase_request_command(
+            lambda: None,
+            {
+                "user_id": metadata.get("user_id"),
+                "channel_id": metadata.get("channel_id"),
+                "text": raw_text,
+            },
+            client,
+        )
+
     def _build_tutorial_blocks(
         owner_id: str,
         selected: str,
@@ -2153,6 +2193,7 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
 
         user_id = body.get("user_id")
         channel_id = body.get("channel_id")
+        trigger_id = body.get("trigger_id")
         raw_text = (body.get("text") or "").strip()
         if not user_id or not channel_id:
             return
@@ -2165,8 +2206,44 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
             )
             return
 
+        if trigger_id:
+            client.views_open(
+                trigger_id=trigger_id,
+                view={
+                    "type": "modal",
+                    "callback_id": "move_purchase_request_modal",
+                    "private_metadata": json.dumps(
+                        {"channel_id": channel_id, "user_id": user_id}
+                    ),
+                    "title": {"type": "plain_text", "text": "Move Purchase Request"},
+                    "submit": {"type": "plain_text", "text": "Move"},
+                    "close": {"type": "plain_text", "text": "Cancel"},
+                    "blocks": [
+                        {
+                            "type": "input",
+                            "block_id": "move_command_text_block",
+                            "label": {"type": "plain_text", "text": "Move Details"},
+                            "element": {
+                                "type": "plain_text_input",
+                                "action_id": "move_command_text_input",
+                                "initial_value": raw_text,
+                                "placeholder": {
+                                    "type": "plain_text",
+                                    "text": "REQ-000123, BNO-003 or REQ-000123, BNO-000 New item",
+                                },
+                            },
+                            "hint": {
+                                "type": "plain_text",
+                                "text": "Use a comma. Add an item name only for a -000 unaccounted target.",
+                            },
+                        }
+                    ],
+                },
+            )
+            return
+
         try:
-            request_id, target_reference_id = _parse_move_purchase_request_command(raw_text)
+            request_id, target_reference_id, target_item_name = _parse_move_purchase_request_command(raw_text)
         except ValueError as e:
             client.chat_postEphemeral(channel=channel_id, user=user_id, text=str(e))
             return
@@ -2202,19 +2279,48 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                     (line for line in target_lines if line.reference_id.upper() == target_reference_id),
                     None,
                 )
-                if target_line is None:
+                if target_line is None and not target_reference_id.endswith("-000"):
                     client.chat_postMessage(
                         channel=channel_id,
                         text=f"❌ Could not find `{target_reference_id}` in *{target_tab}*.",
                     )
                     return
+                moved_item_name = target_item_name if target_reference_id.endswith("-000") else target_line.item_name
+                moved_reports = []
+                for entry in entries:
+                    report = build_budget_report(
+                        subteam=target_tab,
+                        reference_id=target_reference_id,
+                        item_name=moved_item_name or "",
+                        requested_amount=entry.amount_usd,
+                        lines=target_lines,
+                        is_unaccounted=target_reference_id.endswith("-000"),
+                    )
+                    moved_reports.append(report)
 
-                line_numbers = [entry.bundle_line_number for entry in entries]
+                line_updates = {
+                    entry.bundle_line_number: (
+                        report.item_name,
+                        report.available_budget,
+                        _recommendation_header(
+                            report,
+                            settings.item_budget_reject_threshold_percent_of_estimate,
+                        ),
+                    )
+                    for entry, report in zip(entries, moved_reports)
+                }
                 if not sheets.update_purchase_log_category(
                     request_id=request_id,
-                    bundle_line_numbers=line_numbers,
+                    bundle_line_numbers=[entry.bundle_line_number for entry in entries],
                     subteam=target_tab,
                     reference_id=target_reference_id,
+                    item_name=moved_item_name or "",
+                    subteam_available_before=moved_reports[0].available_budget,
+                    bot_assessment=_recommendation_header(
+                        moved_reports[0],
+                        settings.item_budget_reject_threshold_percent_of_estimate,
+                    ),
+                    line_updates=line_updates,
                 ):
                     client.chat_postMessage(
                         channel=channel_id,
@@ -2243,20 +2349,44 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                         for item in items:
                             item["subteam_tab"] = target_tab
                             item["reference_id"] = target_reference_id
+                            item["item_name"] = moved_item_name
+                            item["is_unaccounted"] = target_reference_id.endswith("-000")
                     else:
                         approval_data["subteam_tab"] = target_tab
                         approval_data["reference_id"] = target_reference_id
 
-                old_reference_ids = {entry.reference_id for entry in entries if entry.reference_id}
+                if len(entries) == 1:
+                    blocks = format_manager_notification_blocks(
+                        moved_reports[0],
+                        entries[0].requester_id,
+                        request_id=request_id,
+                        company_name=entries[0].company_name,
+                        purchase_reason=entries[0].purchase_reason,
+                        item_budget_reject_threshold_percent_of_estimate=settings.item_budget_reject_threshold_percent_of_estimate,
+                    )
+                else:
+                    blocks = format_manager_bundle_notification_blocks(
+                        [
+                            {
+                                "line_number": entry.bundle_line_number,
+                                "report": report,
+                                "company_name": entry.company_name,
+                                "reason": entry.purchase_reason,
+                            }
+                            for entry, report in zip(entries, moved_reports)
+                        ],
+                        entries[0].requester_id,
+                        request_id,
+                        sum(entry.amount_usd for entry in entries),
+                        settings.item_budget_reject_threshold_percent_of_estimate,
+                    )
                 if manager_thread_ts:
                     try:
-                        _edit_purchase_request_message(
-                            client,
-                            channel_id=settings.manager_channel_id,
-                            message_ts=manager_thread_ts,
-                            old_reference_ids=old_reference_ids,
-                            target_reference_id=target_reference_id,
-                            category_name=target_tab,
+                        client.chat_update(
+                            channel=settings.manager_channel_id,
+                            ts=manager_thread_ts,
+                            text=f"Purchase request {request_id} moved to {target_reference_id}",
+                            blocks=blocks,
                         )
                     except Exception:
                         logger.exception("Failed to edit manager purchase request %s", request_id)
@@ -2264,13 +2394,11 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                 original_message_ts = entries[0].original_message_ts
                 if original_channel_id and original_message_ts:
                     try:
-                        _edit_purchase_request_message(
-                            client,
-                            channel_id=original_channel_id,
-                            message_ts=original_message_ts,
-                            old_reference_ids=old_reference_ids,
-                            target_reference_id=target_reference_id,
-                            category_name=target_tab,
+                        client.chat_update(
+                            channel=original_channel_id,
+                            ts=original_message_ts,
+                            text=f"Purchase request {request_id} moved to {target_reference_id}",
+                            blocks=blocks,
                         )
                     except Exception:
                         logger.exception("Failed to edit original purchase request %s", request_id)

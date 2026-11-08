@@ -57,11 +57,24 @@ def test_parse_manager_decision_rejects_prose():
 
 
 def test_parse_move_purchase_request_command_normalizes_category_id():
-	assert _parse_move_purchase_request_command(" req-123 bno-003 ") == ("REQ-000123", "BNO-003")
+	assert _parse_move_purchase_request_command(" req-123, bno-003 ") == ("REQ-000123", "BNO-003", None)
+	assert _parse_move_purchase_request_command("REQ-000123, BNO-000 test") == (
+		"REQ-000123",
+		"BNO-000",
+		"test",
+	)
 
 
 def test_parse_move_purchase_request_command_rejects_invalid_category_id():
-	for text in ("", "BNO-003", "REQ-123", "REQ-123 BNO", "REQ-123 BNO_003", "REQ-123 BNO-003 extra"):
+	for text in (
+		"",
+		"BNO-003",
+		"REQ-123",
+		"REQ-123 BNO",
+		"REQ-123, BNO_003",
+		"REQ-123, BNO-003 extra",
+		"REQ-123, BNO-000",
+	):
 		try:
 			_parse_move_purchase_request_command(text)
 		except ValueError:
