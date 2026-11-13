@@ -202,6 +202,23 @@ def test_bundled_amount_selects_approval_role_tier():
 	) == ("S_PRESIDENT_VP",)
 
 
+def test_tran005_and_tran006_always_require_president_vp_approval():
+	settings = SimpleNamespace(
+		chief_usergroup_id="S_CHIEF",
+		president_vp_usergroup_id="S_PRESIDENT_VP",
+	)
+	for reference_id in ("TRAN005", "tran-006"):
+		assert _required_approval_usergroup_ids(
+			{"items": [{"reference_id": reference_id, "requested_amount": 1}]},
+			settings,
+		) == ("S_PRESIDENT_VP",)
+
+	assert _required_approval_usergroup_ids(
+		{"items": [{"reference_id": "TRAN-004", "requested_amount": 1}]},
+		settings,
+	) == ()
+
+
 def test_subteam_watchers_are_only_notified_below_one_hundred_dollars():
 	settings = SimpleNamespace(
 		chief_usergroup_id="S_CHIEF",

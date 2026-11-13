@@ -88,6 +88,7 @@ def _bulk_order_usage(command_keyword: str) -> str:
     return (
         "Usage: Open the request form and enter:\n"
         f"  {command_keyword}\n"
+        "  Each item requires four arguments: reference_id, amount, company name, reason.\n"
         "  <reference_id>, <amount>, <company name>, <reason>\n"
         "  <reference_id>, <amount>, <company name>, <reason>\n"
         "  ...\n"

@@ -66,6 +66,7 @@ SLACK_ACTION_VALUE_MAX_LENGTH = 2000
 USERGROUP_MEMBERS_CACHE_TTL_SECONDS = 300
 CHIEF_APPROVAL_MINIMUM_AMOUNT = 100.0
 PRESIDENT_APPROVAL_MINIMUM_AMOUNT = 250.0
+PRESIDENT_ONLY_REFERENCE_IDS = {"TRAN005", "TRAN006"}
 _USERGROUP_MEMBERS_CACHE: dict[str, tuple[float, set[str]]] = {}
 USER_MENTION_PATTERN = re.compile(r"<@([A-Z0-9]+)(?:\|[^>]+)?>")
 
@@ -127,6 +128,12 @@ def _required_approval_usergroup_ids(
     settings: Settings,
 ) -> tuple[str, ...]:
     items = approval_data.get("items") or [approval_data]
+    if any(
+        str(item.get("reference_id") or "").replace("-", "").upper() in PRESIDENT_ONLY_REFERENCE_IDS
+        for item in items
+    ):
+        return (settings.president_vp_usergroup_id,)
+
     total_amount = sum(float(item.get("requested_amount") or 0) for item in items)
     if total_amount > PRESIDENT_APPROVAL_MINIMUM_AMOUNT:
         return (settings.president_vp_usergroup_id,)
@@ -1836,7 +1843,9 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                 guide_text = (
                     "*How to use `/bigorder`*\n"
                     "1. Run `/bigorder` to open the request form\n"
-                    "2. Enter one item per line\n"
+                    "2. In the form, enter one item per line using four arguments: "
+                    "`reference_id, amount, company name, reason`\n"
+                    "   Each item needs all four arguments; add another line for each additional item.\n"
                     "3. Click *Review* to post your draft details\n"
                     "4. Upload your receipt image(s) or PDF(s) in the channel\n"
                     "5. Click *Confirm*"
@@ -1884,12 +1893,11 @@ def create_server(settings: Settings) -> tuple[Flask, App]:
                 guide_text = (
                     "*How to use `/movepr`*\n"
                     "Move an open purchase request to a different budget category before approving or rejecting it.\n"
-                    "Run it in the manager channel using one of these formats:\n"
-                    "`/movepr REQ-000123, BNO-003` for an existing budget line\n"
-                    "`/movepr REQ-000123, BNO-000 New item` for an unaccounted item\n"
-                    "For a multi-item `/bigorder`, add the line number: "
-                    "`/movepr REQ-000123, BNO-003, 1`.\n"
-                    "Only multi-item requests use a line number; it is required to identify the `/bigorder` line.\n"
+                    "1. Run `/movepr` in the manager channel (do not enter the arguments after the command).\n"
+                    "2. A form pops up; fill in the request ID, target reference ID, and optional line number.\n"
+                    "   For an unaccounted target, include the item name after the `-000` reference ID.\n"
+                    "   For a multi-item `/bigorder`, the line number is required to identify the item.\n"
+                    "   Example values: `REQ-000123, BNO-003` or `REQ-000123, BNO-003, 1`.\n"
                     "The request must still be under review. Existing budget targets must already be listed; "
                     "unaccounted `-000` targets require an item name."
                 )

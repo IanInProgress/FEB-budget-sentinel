@@ -27,7 +27,7 @@ A Slack-integrated budget management system for Formula Electric Berkeley. Membe
 
 ### Manager Approval Workflow
 - **Smart Recommendations** — Reports show ✅ RECOMMEND_APPROVE, ❌ RECOMMEND_REJECT, or ⚠️ RECOMMEND_CONSIDER based on budget analysis
-- **Tiered Approval Authority** — Requests totaling $100–$250 require a member of the chief group or the shared president/vice-president group; requests over $250 require the shared president/vice-president group. Bundled requests use their combined total, and these roles control both approval and rejection.
+- **Tiered Approval Authority** — Requests totaling $100–$250 require a member of the chief group or the shared president/vice-president group; requests over $250 require the shared president/vice-president group. TRAN-005 and TRAN-006 always require the shared president/vice-president group regardless of amount. Bundled requests use their combined total, and these roles control both approval and rejection.
 - **Budget Before/After Display** — Shows exact impact on item budget, subteam budget, and bank balance
 - **Thread-Based Approval** — Managers reply with ✅ or ❌ emoji in thread (receipt image also posted in thread)
 - **Rejection Reasons** — Manager types reason in thread, bot forwards to member via DM
@@ -187,7 +187,7 @@ The bot uses the following reference ID prefixes to identify subteams:
 - `/reference`: DM yourself the reference ID-to-subteam list
 - `/reference <ID>`: DM yourself a view-only link to that subteam's spreadsheet (example: `/reference MECH-001`; a prefix such as `MECH` also works)
 - `/reimburse`: Move approved spend from pending to Amount Reimbursed (manager workflow)
-- `/movepr`: Open a manager-channel form to move a purchase request. Enter `REQ-000123, BNO-003` for an existing budget item, or `REQ-000123, BNO-000 New item` to move it to an unaccounted item in a new category. For a multi-item request, add the bundle line number, such as `REQ-000123, BNO-003, 1`; line numbers are only valid for multi-item requests and are required to identify the `/bigorder` line. The bot refreshes the item name, available-budget assessment, and recommendation.
+- `/movepr`: In the manager channel, run `/movepr` first; a form pops up where you enter the request ID, target reference ID, and optional line number. Use `REQ-000123, BNO-003` for an existing budget item, or `REQ-000123, BNO-000 New item` for an unaccounted item in a new category. For a multi-item request, the line number is required to identify the `/bigorder` line, such as `REQ-000123, BNO-003, 1`. The bot refreshes the item name, available-budget assessment, and recommendation.
 - `/delete REQ-000003`: Void a request in the manager channel (`/delete 3` also works). Reverses its approved spend (reduces pending spend, and clears columns A-E of bot-created unaccounted lines left empty without deleting the sheet row), marks it `voided` in Purchases_Log, and replaces the ✅ reaction on the original purchase message with 🗑️
 - `/subteam-pings add <prefix>` / `remove <prefix>` / `list`: Manage your optional purchase-request watcher subscriptions in the manager channel
 
@@ -236,7 +236,7 @@ Each reference prefix maps to its own copied subteam spreadsheet. Google Drive s
    <reference_id>, <amount>, <company name>, <reason>
    ```
 
-   **Bigorder format:**
+   **Bigorder format:** Each item requires all four arguments below. Add one line per item.
    ```
    <reference_id>, <amount>, <company name>, <reason>
    <reference_id>, <amount>, <company name>, <reason>
@@ -250,7 +250,7 @@ Each reference prefix maps to its own copied subteam spreadsheet. Google Drive s
    /purchase DYNA-008, 2500.00, Fox, New dampers for suspension
    ```
    
-   **Example bulk order:**
+   **Example bulk order** (run `/bigorder` first, then enter these lines in the form):
    ```
    /bigorder EECS-025, 42.50, Digi-Key, Zipties for cable management
    EECS-010, 15.00, McMaster-Carr, Ferrules
@@ -258,6 +258,8 @@ Each reference prefix maps to its own copied subteam spreadsheet. Google Drive s
    ```
    
    *Note: For unaccounted items (ending in -000), you must provide an item name after the reference ID*
+
+   **Move a request:** Run `/movepr` in the manager channel first. A form pops up; enter the move arguments there rather than after the slash command. Use `REQ-000123, BNO-003` for a single-item request, or add the `/bigorder` line number, such as `REQ-000123, BNO-003, 1`.
 
 4. **Wait for Approval**
    - Your request is posted to the manager channel with a budget recommendation
