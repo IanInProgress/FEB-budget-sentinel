@@ -1,3 +1,6 @@
+import contextlib
+import importlib.abc
+import importlib.machinery
 import os
 import sys
 from pathlib import Path
@@ -13,9 +16,10 @@ os.environ.setdefault("CHIEF_USERGROUP_ID", "S_CHIEF")
 os.environ.setdefault("PRESIDENT_VP_USERGROUP_ID", "S_PRESIDENT_VP")
 
 
-# `app` builds the Slack app and Google clients at import time. Import it here,
-# once, with fake settings and stubbed clients, so tests never read a developer's
-# .env or reach the real Slack workspace, budget spreadsheet, or Drive folder.
+# `app` builds the Slack app and Google clients at import time. Whenever a test
+# imports it, run that import with fake settings and stubbed clients, so tests
+# never read a developer's .env or reach the real Slack workspace, budget
+# spreadsheet, or Drive folder. Tests that don't import `app` never load it.
 _FAKE_APP_ENV = {
     "SLACK_BOT_TOKEN": "xoxb-test-token",
     "SLACK_SIGNING_SECRET": "test-signing-secret",
@@ -53,7 +57,8 @@ def _fake_sheets_init(self, *, spreadsheet_id, **_kwargs):
     self._sh = None
 
 
-def _import_app_offline():
+@contextlib.contextmanager
+def _offline_app_import():
     import receipts
     import sheets_client
 
@@ -67,7 +72,26 @@ def _import_app_offline():
             mock.patch.object(sheets_client.SheetsClient, "ensure_purchase_log_schema_on_startup", lambda self: None), \
             mock.patch.object(sheets_client.SheetsClient, "ensure_reimbursements_log_schema_on_startup", lambda self: None), \
             mock.patch.object(receipts.ReceiptDriveStorage, "__init__", _no_drive):
-        import app  # noqa: F401
+        yield
 
 
-_import_app_offline()
+class _OfflineAppFinder(importlib.abc.MetaPathFinder):
+    """Runs the import of the top-level `app` module inside `_offline_app_import`."""
+
+    def find_spec(self, fullname, path, target=None):
+        if fullname != "app":
+            return None
+        spec = importlib.machinery.PathFinder.find_spec(fullname, path)
+        if spec is None or spec.loader is None:
+            return spec
+        exec_module = spec.loader.exec_module
+
+        def exec_module_offline(module):
+            with _offline_app_import():
+                exec_module(module)
+
+        spec.loader.exec_module = exec_module_offline
+        return spec
+
+
+sys.meta_path.insert(0, _OfflineAppFinder())
