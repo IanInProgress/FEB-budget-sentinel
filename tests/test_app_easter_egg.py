@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import app
 from app import _send_easter_egg_if_triggered
 
@@ -33,7 +35,7 @@ def test_posts_member_specific_image(monkeypatch):
     upload = client.messages[0]
     assert upload["channel"] == "C123"
     assert upload["thread_ts"] == "111.222"
-    assert upload["file"].endswith("/images/bob.png")
+    assert Path(upload["file"]).parts[-2:] == ("images", "bob.png")
     assert upload["filename"] == "bob.png"
     assert upload["title"] == "Bob"
 
